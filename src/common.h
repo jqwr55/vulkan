@@ -1159,6 +1159,14 @@ struct PNGInfo {
     u8 interlaceMethod;
 };
 
+typedef void (local_io_flush)(LinearAllocator* io);
+typedef byte* (local_print_t)(byte* buffer, u32 buffer_size, const char* format ...);
+struct Printer {
+    void* user;
+    LinearAllocator* io;
+    local_print_t print;
+    local_io_flush flush;
+};
 u16 ReverseByteOrder(u16 n);
 u32 ReverseByteOrder(u32 n);
 u64 ReverseByteOrder(u64 n);

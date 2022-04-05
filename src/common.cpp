@@ -1606,10 +1606,12 @@ void FlushByte(BitStream* stream) {
     stream->bitPtr = 0;
 }
 
-u32 Deflate(byte* in, LinearAllocator* alloc) {
+u32 HuffmanDecode(BitStream* stream) {
+
+}
+u32 Inflate(byte* in, LinearAllocator* alloc) {
 
     BitStream stream{in, 0};
-
     u32 size = 0;
     for(;;) {
 
@@ -1634,12 +1636,67 @@ u32 Deflate(byte* in, LinearAllocator* alloc) {
                 break;
             }
         case 1:
-            {
-                
-                break;
-            }
         case 2:
             {
+                for(;;) {
+
+                    if(type == 2) {
+
+                        u32 HLIT = ReadBits(&stream, 5) + 257;
+                        u32 HDIST = ReadBits(&stream, 5) + 1;
+                        u32 HCLEN = ReadBits(&stream, 4) + 4;
+
+                        u32 HCLENSwizzle[] = {
+                            16, 17, 18,0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+                        };
+                        u32 HCLENTable[19];
+                        u32 lenTable[512];
+                        
+                        ASSERT(HCLEN < SIZE_OF_ARRAY(HCLENSwizzle));
+                        for(u32 i = 0; i < HLIT; i++) {
+                            HCLENTable[HCLENSwizzle[i]] = ReadBits(&stream, 3);
+                        }
+                        for() {
+
+                            u32 encodedLen;
+                            u32 len;
+                            if(len <= 15) {
+
+                            }
+                            else if(len == 16) {
+                                
+                            }
+                            else if(len == 17) {
+
+                            }
+                            else if(len == 18) {
+
+                            }
+                        }
+
+                    }
+                    else {
+
+                    }
+                    u32 litLen = HuffmanDecode(&stream);
+                    if(litLen < 256) {
+                        u32 literal = ReadBits(&stream, 8);
+                        Mem<byte>(linear_allocate(alloc, 1)) = literal;
+                    }
+                    else if(litLen == 256) {
+                        break;
+                    }
+                    else {
+                        litLen = 256 - litLen;
+                        u32 dist = HuffmanDecode(&stream);
+
+                        auto it = alloc->base + (alloc->top - dist);
+                        for(u32 i = 0; i < litLen; i++) {
+                            alloc->base[alloc->top++] = it[i];
+                        }
+                    }
+                }
+                
                 break;
             }
         }
@@ -1767,8 +1824,6 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
                 tmp->next = comments;
                 comments = tmp;
                 info.commentCount++;
-
-                //global_print("xss*cs*c", mem - pngMemory, " tEXt\n", chunk->payload, keyWordLen, ' ', chunk->payload + keyWordLen, textLen, '\n');
                 break;
             }
         default:
