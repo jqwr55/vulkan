@@ -2160,25 +2160,17 @@ constexpr u32 PixelChannelCounts[] = {
     0,
     4,
 };
-u8 PaethPredictor(u32 a, u32 b, u32 c) {
-
-    u32 p = a + b - c;
-    u32 pa = Abs(p - a);
-    u32 pb = Abs(p - b);
-    u32 pc = Abs(p - c);
-
-    u8 Pr;
-    if (pa <= pb && pa <= pc) {
-        Pr = a;
-    }
-    else if (pb <= pc) {
-        Pr = b;
-    }
-    else {
-        Pr = c;
-    }
-    return Pr;
+i32 PaethPredictor(i32 a, i32 b, i32 c) {
+   
+   i32 p = a + b - c;
+   i32 pa = Abs(p-a);
+   i32 pb = Abs(p-b);
+   i32 pc = Abs(p-c);
+   if (pa <= pb && pa <= pc) return a;
+   if (pb <= pc) return b;
+   return c;
 }
+
 u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src, u32 outChannelN) {
 
     ASSERT(info->filterMethod == 0);
@@ -2240,7 +2232,11 @@ u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src, u32 outChannelN) {
                     dst[k] = BYTECAST(src[k] + ( (priorRow[k] + dst[k-outputByteCount]) >> 1 ));
                     break;
                 case 4:
-                    dst[k] = BYTECAST(src[k] + PaethPredictor(dst[k-outputByteCount], priorRow[k], priorRow[k-outputByteCount]));
+                    {
+                        auto src_v = src[k];
+                        auto predictor = PaethPredictor(dst[k-outputByteCount], priorRow[k], priorRow[k-outputByteCount]);
+                        dst[k] = BYTECAST(src_v + predictor );
+                    }
                     break;
                 }
             }
@@ -2251,38 +2247,6 @@ u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src, u32 outChannelN) {
             priorRow += (i == 0 ? 0 : outputByteCount);
         }
 
-        /*
-        for(i32 j = 0; j < (info->width * pixelSize) - pixelSize; j++) {
-
-            switch (filterType) {
-            case 0:
-                *dst = *src;
-                break;
-            case 1:
-                *dst = BYTECAST(*src + dst[-outputByteCount]);
-                break;
-            case 2:
-                *dst = BYTECAST(*src + *priorRow);
-                break;
-            case 3:
-                *dst = BYTECAST(*src + ( (*priorRow + dst[-outputByteCount]) >> 1 ));
-                break;
-            case 4:
-                *dst = BYTECAST(*src + PaethPredictor(dst[-outputByteCount], *priorRow, priorRow[-outputByteCount]));
-                break;
-            }
-
-            src++;
-            dst++;
-            priorRow += (i != 0);
-
-            if(outChannelN == 4 && (dst - dstBegin) % 4 == 0) {
-                auto off = dst - dstBegin;
-                dst++;
-            }
-        }
-        */
-
 
         priorRow = currentRow;
 
@@ -2290,6 +2254,7 @@ u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src, u32 outChannelN) {
     
     return dst - dstBegin;
 }
+
 enum {
    STBI__F_none=0,
    STBI__F_sub=1,
@@ -2308,17 +2273,6 @@ u8 first_row_filter[5] = {
    STBI__F_avg_first,
    STBI__F_paeth_first
 };
-
-i32 PaethPredictor(i32 a, i32 b, i32 c) {
-   
-   i32 p = a + b - c;
-   i32 pa = abs(p-a);
-   i32 pb = abs(p-b);
-   i32 pc = abs(p-c);
-   if (pa <= pb && pa <= pc) return a;
-   if (pb <= pc) return b;
-   return c;
-}
 
 u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN) {
    
@@ -2447,7 +2401,13 @@ u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN) {
                     for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) \
                     for (i32 k = 0; k < filter_bytes; ++k)
             switch (filter) {
-                STBI__CASE(STBI__F_none)         { cur[k] = src[k]; } break;
+                case STBI__F_none:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                             cur[k] = src[k];
+                        }
+                    }
+                    break;
                 case STBI__F_sub:
                     for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
                         for (i32 k = 0; k < filter_bytes; ++k) {
@@ -2455,12 +2415,52 @@ u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN) {
                         }
                     }
                     break;
-                //STBI__CASE(STBI__F_sub)          { cur[k] = BYTECAST(src[k] + cur[k - output_bytes]); } break;
+                case STBI__F_up:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                            cur[k] = BYTECAST(src[k] + prior[k]);
+                        }
+                    }
+                    break;
+                case STBI__F_avg:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                            cur[k] = BYTECAST(src[k] + ((prior[k] + cur[k- output_bytes])>>1));
+                        }
+                    }
+                    break;
+                case STBI__F_paeth:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        const auto offf = cur - dstBegin;
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+
+                            cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],prior[k],prior[k- output_bytes]));
+                        }
+                    }
+                    break;
+                case STBI__F_avg_first:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                            cur[k] = BYTECAST(src[k] + (cur[k- output_bytes] >> 1));
+                        }
+                    }
+                    break;
+                case STBI__F_paeth_first:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                            cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],0,0));
+                        }
+                    }
+                    break;
+                    /*
+                STBI__CASE(STBI__F_none)         { cur[k] = src[k]; } break;
+                STBI__CASE(STBI__F_sub)          { cur[k] = BYTECAST(src[k] + cur[k - output_bytes]); } break;
                 STBI__CASE(STBI__F_up)           { cur[k] = BYTECAST(src[k] + prior[k]); } break;
                 STBI__CASE(STBI__F_avg)          { cur[k] = BYTECAST(src[k] + ((prior[k] + cur[k- output_bytes])>>1)); } break;
                 STBI__CASE(STBI__F_paeth)        { cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],prior[k],prior[k- output_bytes])); } break;
                 STBI__CASE(STBI__F_avg_first)    { cur[k] = BYTECAST(src[k] + (cur[k- output_bytes] >> 1)); } break;
                 STBI__CASE(STBI__F_paeth_first)  { cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],0,0)); } break;
+                    */
             }
             #undef STBI__CASE
 
@@ -2507,24 +2507,177 @@ ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc) {
 
     u8* pixelData = (u8*)linear_allocator_top(alloc);
     auto imgSize = PNGReconstructFilter(&info, pixelData, decompressed, 4);
-    linear_allocate(alloc, imgSize);
-
-    u8* stbi = (u8*)linear_allocator_top(alloc);
-    auto stbiSize = PNGReconstructFilter_(&info, stbi, decompressed, 4);
-    ASSERT(stbiSize == imgSize);
-
-    auto cmp = MemCmp(stbi, pixelData, imgSize);
-
-    return {};
-    //alloc->top = begin;
-    //memcpy(linear_allocator_top(alloc), pixelData, imgSize);
     
-    /*
+    alloc->top = begin;
+    memcpy(linear_allocator_top(alloc), pixelData, imgSize);
     ImageDescriptor descriptor;    
     descriptor.height = info.height;
     descriptor.width = info.width;
     descriptor.img = (Pixel*)linear_allocate(alloc, imgSize);
-    */
 
-    //return descriptor;
+    return descriptor;
+}
+
+
+struct JFIFMarkerNopayload {
+    u8 signature;
+    u8 type;
+};
+struct __attribute__ ((packed)) JFIFMarker {
+    u8 signature;
+    u8 type;
+    u16 length;
+    byte payload[];
+};
+struct MarkerDescriptor {
+    u8 type;
+    bool payload;
+    const char* name;
+};
+MarkerDescriptor JFIFMarkers[] = {
+    {0xD8, 0, "SOI"},
+    {0xC0, 1, "SOF0"},
+    {0xC2, 1, "SOF2"},
+    {0xC4, 1, "DHT"},
+    {0xDB, 1, "DQT"},
+    {0xDD, 1, "DRI"},
+    {0xD0, 0, "RSTn"},
+    {0xE0, 1, "APP"},
+    {0xFE, 1, "COM"},
+    {0xDA, 1, "SOS"},
+    {0xD9, 0, "EOI"},
+};
+struct __attribute__ ((packed)) APP0Payload {
+    char identifier[5];
+    u8 major;
+    u8 minor;
+    u8 densityUnit;
+    u16 xDensity;
+    u16 yDensity;
+    u16 xThumbnail;
+    u16 yThumbnail;
+    u8 thumbnailData[];
+};
+bool VerifyJFIFSignature(byte* mem) {
+
+    auto SOI = (JFIFMarkerNopayload*)mem;
+    auto APP = (JFIFMarker*)(mem + 2);
+
+    auto q = Mem<u32>(mem);
+
+    if(SOI->signature != 0xFF || SOI->type != 0xD8 || APP->signature != 0xFF ||APP->type != 0xE0) {
+        return false;
+    }
+
+    auto len = ReverseByteOrder(APP->length);
+    ASSERT(len > 0 && len < 255);
+    len -= sizeof(APP0Payload);
+    if(len % 3 != 0) {
+        return false;
+    }
+
+    auto appInfo = (APP0Payload*)APP->payload;
+    if(!str_cmp("JFIF", appInfo->identifier)) {
+        return false;
+    }
+
+    if(appInfo->densityUnit > 2) {
+        return false;
+    }
+
+    if(appInfo->xDensity == 0 || appInfo->yDensity == 0) {
+        return false;
+    }
+
+    return true;
+}
+
+JFIFInfo ParseJFIFMemory(byte* mem, u32 size, LinearAllocator* alloc) {
+
+    if(!VerifyJFIFSignature(mem)) {
+        return {};
+    }
+
+    ASSERT(*mem == 0xFF);
+    u32 index = 0;
+    for(auto it = mem; it < mem + size; index++) {
+
+        auto marker = (JFIFMarkerNopayload*)it;
+        ASSERT(marker->signature == 0xFF);
+        if(marker->type == 0xD9) {
+            break;
+        }
+
+        MarkerDescriptor descriptor;
+        for(u32 i = 0; i < SIZE_OF_ARRAY(JFIFMarkers); i++) {
+            if(marker->type == JFIFMarkers[i].type) {
+                descriptor = JFIFMarkers[i];
+                break;
+            }
+        }
+
+        it = (byte*)(marker+1);
+        global_print("s", descriptor.name, '\n');
+        if(descriptor.payload) {
+            auto markerPaylod = (JFIFMarker*)marker;
+            auto len = ReverseByteOrder(markerPaylod->length);
+            global_print("suc", " len ", len, '\n');
+
+            it = markerPaylod->payload + len - 2;
+        }
+    }
+    global_io_flush();
+}
+
+u32 AddBinary(bool* a, u32 aCount, bool* b, u32 bCount, bool* result) {
+
+    i32 s = 0;
+    i32 i = aCount - 1;
+    i32 j = bCount - 1;
+    u32 ret = 0;
+    while (i >= 0 || j >= 0 || s == 1) {      
+        // Compute sum of last digits and carry
+        s += (i >= 0 ? a[i] : 0);
+        s += (j >= 0 ? b[j] : 0);
+        // If current digit sum is 1 or 3, add 1 to result
+        result[ret++] = s & 1;
+        // Compute carry
+        s /= 2;
+        // Move to next digits
+        i--;
+        j--;
+    }
+
+    // flip
+    for(u32 i = 0; i < ret/2; i++) {
+        result[i] = result[ret - i - 1];
+    }
+
+    return ret;
+}
+u32 IncBinary(bool* a, u32 aCount, bool* result) {
+
+    i32 s = 0;
+    i32 i = aCount - 1;
+    i32 j = 0;
+    u32 ret = 0;
+    while (i >= 0 || j >= 0 || s == 1) {      
+        // Compute sum of last digits and carry
+        s += (i >= 0 ? a[i] : 0);
+        s += (j >= 0 ? 1 : 0);
+        // If current digit sum is 1 or 3, add 1 to result
+        result[ret++] = s & 1;
+        // Compute carry
+        s /= 2;
+        // Move to next digits
+        i--;
+        j--;
+    }
+
+    // flip
+    for(u32 i = 0; i < ret/2; i++) {
+        result[i] = result[ret - i - 1];
+    }
+
+    return ret;
 }

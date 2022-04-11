@@ -1177,3 +1177,10 @@ u32 PNGDataSize(PNGInfo* png);
 u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src);
 u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN);
 ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc);
+
+
+
+struct JFIFInfo {
+
+};
+JFIFInfo ParseJFIFMemory(byte* mem, u32 size, LinearAllocator* alloc);

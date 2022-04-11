@@ -2706,9 +2706,9 @@ i32 main(i32 argc, const char** argv) {
 
     auto mem = init_global_state(0, Megabyte(256), 512);
 
-    auto size = ReadFile("../honk.png", mem);
+    auto size = ReadFile("../general.jpg", mem);
     auto alloc = make_linear_allocator(((byte*)mem + size), Megabyte(256) - size);
-    auto honk = MakeImagePNG(mem, &alloc);
+    ParseJFIFMemory(mem, size, &alloc);
 
     exit(0);
     glfwInit();
@@ -2740,7 +2740,7 @@ i32 main(i32 argc, const char** argv) {
 
     u32 screenShot = 0;
 
-    auto texture = UploadVkTexture(&ctx, honk);
+    auto texture = UploadVkTexture(&ctx, {});
     auto texID = RegisterTexture(&ctx, texture, ctx.textureSampler, ctx.textureDescriptors);
 
     auto info = LoadOBJ(ctx.uploadMemory.base, (byte*)linear_top(&ctx.uploadMemory), "../res/rooom.obj");
