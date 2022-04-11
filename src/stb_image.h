@@ -4596,6 +4596,7 @@ static int stbi__create_png_image_raw(stbi__png *a, stbi_uc *raw, stbi__uint32 r
    for (j=0; j < y; ++j) {
       stbi_uc *cur = a->out + stride*j;
       stbi_uc *prior;
+
       int filter = *raw++;
 
       if (filter > 4)

@@ -1156,19 +1156,24 @@ struct PNGInfo {
 
     u8 bitDepth;
     u8 colorType;
+    u8 filterMethod;
     u8 interlaceMethod;
 };
 
-typedef void (local_io_flush)(LinearAllocator* io);
-typedef byte* (local_print_t)(byte* buffer, u32 buffer_size, const char* format ...);
+typedef void (local_io_flush)(void* user);
+typedef void (local_print_t)(void* user, const char* format ...);
 struct Printer {
     void* user;
-    LinearAllocator* io;
-    local_print_t print;
-    local_io_flush flush;
+    local_print_t* print;
+    local_io_flush* flush;
 };
 u16 ReverseByteOrder(u16 n);
 u32 ReverseByteOrder(u32 n);
 u64 ReverseByteOrder(u64 n);
 PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc);
-void PrintPNGChunks(const byte* pngMemory);
+void PrintPNGChunks(const byte* pngMemory, Printer printer);
+u32 Inflate(byte* in, LinearAllocator* alloc);
+u32 PNGDataSize(PNGInfo* png);
+u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src);
+u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN);
+ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc);

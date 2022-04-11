@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <memory>
 
+
 byte *global_malloc_base;
 malloc_handler_t global_out_of_memory_handler;
 LinearAllocator io;
@@ -1477,12 +1478,13 @@ bool PNGCheckColorTypeBitDepth(PNGInfo* info) {
 
 
 
-void PrintPNGChunks(const byte* pngMemory) {
+void PrintPNGChunks(const byte* pngMemory, Printer printer) {
 
     if(!VerifyPngSignature(pngMemory)) {
-        global_print("s", "signature missmatch\n");
+        printer.print(printer.user, "s", "signature missmatch\n");
     }
 
+    bool firstIdat = true;
     const byte* mem = pngMemory + 8;
     for(bool run = true; run ;) {
 
@@ -1491,7 +1493,7 @@ void PrintPNGChunks(const byte* pngMemory) {
         case PNG_TYPE_STR('I', 'H', 'D', 'R'):
             {
                 
-                global_print("xs", mem - pngMemory, " IHDR\n");
+                printer.print(printer.user, "xs", mem - pngMemory, " IHDR\n");
 
                 auto ihdr = Mem<IHDRPayload>(chunk->payload);
                 ihdr.height = ReverseByteOrder(ihdr.height);
@@ -1506,23 +1508,51 @@ void PrintPNGChunks(const byte* pngMemory) {
                     "R,G,B,A",
                 };
 
-                global_print("suc", " height: ", (u64)ihdr.height, '\n');
-                global_print("suc", " width: ", (u64)ihdr.width, '\n');
-                global_print("suc", " bitDepth: ", (u64)ihdr.bitDepth, '\n');
-                global_print("sucss", " colorType: ", (u64)ihdr.colorType, '(', colorTypeStrs[ihdr.colorType], ")\n");
-                global_print("suc", " ompressionMethod: ", (u64)ihdr.compressionMethod, '\n');
-                global_print("suc", " filterMethod: ", (u64)ihdr.filterMethod, '\n');
-                global_print("suc", " interlaceMethod: ", (u64)ihdr.interlaceMethod, '\n');
+                printer.print(printer.user, "suc", " height: ", (u64)ihdr.height, '\n');
+                printer.print(printer.user, "suc", " width: ", (u64)ihdr.width, '\n');
+                printer.print(printer.user, "suc", " bitDepth: ", (u64)ihdr.bitDepth, '\n');
+                printer.print(printer.user, "sucss", " colorType: ", (u64)ihdr.colorType, '(', colorTypeStrs[ihdr.colorType], ")\n");
+                printer.print(printer.user, "su", " compressionMethod: ", (u64)ihdr.compressionMethod);
+                if(ihdr.compressionMethod == 0) {
+                    printer.print(printer.user, "s", "(deflate)\n");
+                }
+                printer.print(printer.user, "suc", " filterMethod: ", (u64)ihdr.filterMethod, '\n');
+                printer.print(printer.user, "suc", " interlaceMethod: ", (u64)ihdr.interlaceMethod, '\n');
                 break;
             }
         case PNG_TYPE_STR('I', 'D', 'A', 'T'):
             {
-                global_print("xs", mem - pngMemory, " IDAT\n");
+                printer.print(printer.user, "xs", mem - pngMemory, " IDAT\n");
+
+                if(firstIdat) {
+                    firstIdat = false;
+
+                    auto CMF = chunk->payload[0];
+                    auto FLG = chunk->payload[1];
+
+                    u16 check = (CMF * 256 + FLG);
+                    if(check % 31 != 0) {
+                        printer.print(printer.user, "s", " zlib corruption: CMF*256 + FLG is not multiple of 31\n");
+                    }
+
+                    u8 CM = CMF & 0xF;
+                    u8 CINFO = CMF >> 4;
+                    u8 FCHECK = FLG & 0x1F;
+                    u8 FDICT = (FLG >> 5) & 1;
+                    u8 FLEVEL = (FLG >> 6);
+
+                    printer.print(printer.user, "suc", " CM: ", (u64)CM, '\n');
+                    printer.print(printer.user, "suc", " CINFO: ", (u64)CINFO, '\n');
+                    printer.print(printer.user, "suc", " FCHECK: ", (u64)FCHECK, '\n');
+                    printer.print(printer.user, "suc", " FDICT: ", (u64)FDICT, '\n');
+                    printer.print(printer.user, "suc", " FLEVEL: ", (u64)FLEVEL, '\n');
+                }
+
                 break;
             }
         case PNG_TYPE_STR('I', 'E', 'N', 'D'):
             {
-                global_print("xs", mem - pngMemory, " IEND\n");
+                printer.print(printer.user, "xs", mem - pngMemory, " IEND\n");
                 run = false;
                 break;
             }
@@ -1532,7 +1562,7 @@ void PrintPNGChunks(const byte* pngMemory) {
                 auto keyWordLen = str_len((const char*)chunk->payload);
                 auto chunkS = ReverseByteOrder(chunk->length);
                 auto textLen = chunkS - keyWordLen;
-                global_print("xss*cs*c", mem - pngMemory, " tEXt\n ", chunk->payload, keyWordLen, ' ', chunk->payload + keyWordLen, textLen, '\n');
+                printer.print(printer.user, "xss*cs*c", mem - pngMemory, " tEXt\n ", chunk->payload, keyWordLen, ' ', chunk->payload + keyWordLen, textLen, '\n');
 
                 break;
             }
@@ -1548,12 +1578,12 @@ void PrintPNGChunks(const byte* pngMemory) {
         case PNG_TYPE_STR('h', 'I', 'S', 'T'):
         case PNG_TYPE_STR('t', 'I', 'M', 'E'):
             {
-                global_print("xs*c", mem - pngMemory, &chunk->type, 4, '\n');
+                printer.print(printer.user, "xcs*c", mem - pngMemory, ' ', &chunk->type, 4, '\n');
                 break;
             }
         default:
             {
-                global_print("xss*c", mem - pngMemory, " unkonw chunk: ", &chunk->type, 4, '\n');
+                printer.print(printer.user, "xss*c", mem - pngMemory, " unkonw chunk: ", &chunk->type, 4, '\n');
                 break;
             }
         }
@@ -1562,7 +1592,7 @@ void PrintPNGChunks(const byte* pngMemory) {
         mem = (byte*)(end + 1);
     }
 
-    global_io_flush();
+    printer.flush(printer.user);
 }
 
 
@@ -1570,6 +1600,31 @@ struct BitStream {
     byte* bytePtr;
     u32 bitPtr;
 };
+u32 PeakBits(const BitStream* stream, u32 bitCount) {
+
+    ASSERT(bitCount < 33);
+    auto bitPtr = stream->bitPtr;
+    auto bytePtr = stream->bytePtr;
+
+    bytePtr += bitPtr >> 3;
+    bitPtr &= 7;
+
+    byte b = *bytePtr;
+    u32 ret = 0;
+    for(u32 i = 0; i < bitCount; i++) {
+        
+        u32 bit = (b >> bitPtr) & 1;
+        ret |= (bit << i);
+
+        bitPtr++;
+        if(bitPtr == 8) {
+           b = *(++bytePtr);
+           bitPtr = 0;
+        }
+    }
+
+    return ret;    
+}
 u32 ReadBits(BitStream* stream, u32 bitCount) {
 
     ASSERT(bitCount < 33);
@@ -1584,14 +1639,14 @@ u32 ReadBits(BitStream* stream, u32 bitCount) {
     u32 ret = 0;
     for(u32 i = 0; i < bitCount; i++) {
         
-        if(bitPtr == 7) {
-           b = *(++bytePtr);
-           bitPtr = 0;
-        }
         u32 bit = (b >> bitPtr) & 1;
         ret |= (bit << i);
 
         bitPtr++;
+        if(bitPtr == 8) {
+           b = *(++bytePtr);
+           bitPtr = 0;
+        }
     }
 
     stream->bitPtr = bitPtr;
@@ -1599,6 +1654,17 @@ u32 ReadBits(BitStream* stream, u32 bitCount) {
 
     return ret;
 }
+void SkipBits(BitStream* stream, u32 bitCount) {
+
+    auto bitPtr = stream->bitPtr;
+    auto bytePtr = stream->bytePtr;
+
+    u32 byteSkip = (bitPtr + bitCount) >> 3;
+    bitPtr = (bitPtr + bitCount) & 7;
+    stream->bitPtr = bitPtr;
+    stream->bytePtr += byteSkip;
+}
+
 void FlushByte(BitStream* stream) {
 
     ASSERT(stream->bitPtr < 8);
@@ -1606,103 +1672,315 @@ void FlushByte(BitStream* stream) {
     stream->bitPtr = 0;
 }
 
-u32 HuffmanDecode(BitStream* stream) {
 
+u32 ReverseBits(u32 c, u32 len) {
+
+    u32 reversedCode = 0;
+    for(u32 j = 0; j <= len / 2; j++) {
+
+        auto topBitIndex = len - (j + 1);
+        u32 bottomBit = (c >> j) & 1;
+        u32 topBit = (c >> topBitIndex) & 1;
+
+        reversedCode |= (bottomBit << topBitIndex) | (topBit << j);
+    }
+    return reversedCode;
+}
+
+struct HuffmanEntry {
+    u16 symbol;
+    u16 bitLen;
+};
+struct HuffmanDictionary {
+
+    u32 maxCodeLen;
+    u32 count;
+    HuffmanEntry* entries;
+};
+HuffmanDictionary AllocateHuffmanDict(LinearAllocator* alloc, u32 maxCodeLen) {
+
+    HuffmanDictionary ret;
+    ret.count = 1 << maxCodeLen;
+    ret.entries = (HuffmanEntry*)linear_allocate(alloc, ret.count * sizeof(HuffmanEntry));
+    ret.maxCodeLen = maxCodeLen;
+
+    return ret;
+}
+void ComputeHuffmanDict(HuffmanDictionary* dict, u32 count, u32* codeLens) {
+
+    memset(dict->entries, 0, sizeof(HuffmanEntry) * dict->count);
+    u32 lenFreqs[16]{};
+    for(u32 i = 0; i < count; i++) {
+        lenFreqs[codeLens[i]]++;
+    }
+
+    u32 code = 0;
+    u32 nextCode[16]{};
+    lenFreqs[0] = 0;
+    for(u32 i = 1; i < 16; i++) {
+        code = (code + lenFreqs[i - 1]) << 1;
+        nextCode[i] = code;
+    }
+
+    for(u32 i = 0; i < count; i++) {
+
+        auto len = codeLens[i];
+        if(len) {
+
+            u32 c = nextCode[len];
+            nextCode[len]++;
+            c = ReverseBits(c, len);
+            u32 upperBitCount = dict->maxCodeLen - len;
+            for(u32 k = 0; k < (1 << upperBitCount); k++) {
+                
+                u32 index = (k << len) | c;
+                dict->entries[index].bitLen = len;
+                dict->entries[index].symbol = i;
+            }
+        }
+    }
+}
+
+u32 HuffmanDecode(HuffmanDictionary* dict, BitStream* stream) {
+
+    u32 index = PeakBits(stream, dict->maxCodeLen);
+    ASSERT(index < dict->count);
+    auto entry = dict->entries + index;
+    SkipBits(stream, dict->entries[index].bitLen);
+    return dict->entries[index].symbol;
+}
+
+void ConstructStaticHuffman(HuffmanDictionary* litLenDict, HuffmanDictionary* distDict) {
+
+    u32 codeLength[288];
+    u32 i = 0;
+    for(;i < 144; i++) {
+        codeLength[i] = 8;
+    }
+    for(;i < 256; i++) {
+        codeLength[i] = 9;
+    }
+    for(;i < 280; i++) {
+        codeLength[i] = 7;
+    }
+    for(;i < 288; i++) {
+        codeLength[i] = 8;
+    }
+    ComputeHuffmanDict(litLenDict, 288, codeLength);
+    for(i = 0;i < 30; i++) {
+        codeLength[i] = 5;
+    }
+    ComputeHuffmanDict(distDict, 30, codeLength);
+}
+void DynamicHuffman(HuffmanDictionary* dict, HuffmanDictionary* litLen, HuffmanDictionary* dist, BitStream* stream) {
+
+    u32 HLIT = ReadBits(stream, 5) + 257;
+    u32 HDIST = ReadBits(stream, 5) + 1;
+    u32 HCLEN = ReadBits(stream, 4) + 4;
+
+    constexpr auto maxTableSize = (1 << 5) * 2 + (258);
+    const u32 HCLENSwizzle[] = {
+        16, 17, 18,0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+    };
+    u32 litLenDistTable[maxTableSize];
+    u32 HCLENTable[19]{};
+    ASSERT(HCLEN <= SIZE_OF_ARRAY(HCLENSwizzle));
+    
+    for(u32 i = 0; i < HCLEN; i++) {
+        HCLENTable[HCLENSwizzle[i]] = ReadBits(stream, 3);
+    }
+    ComputeHuffmanDict(dict, SIZE_OF_ARRAY(HCLENTable), HCLENTable);
+    
+    u32 lenCount = HLIT + HDIST;
+    u32 i = 0;
+    for(;i < lenCount;) {
+
+        u32 encodedLen = HuffmanDecode(dict, stream);
+        u32 repCount = 1;
+        u32 repVal = 0;
+        if(encodedLen <= 15) {
+            repVal = encodedLen;
+        }
+        else if(encodedLen == 16) {
+            repCount = 3 + ReadBits(stream, 2);
+            repVal = litLenDistTable[i - 1];
+        }
+        else if(encodedLen == 17) {
+            repCount = 3 + ReadBits(stream, 3);
+        }
+        else if(encodedLen == 18) {
+            repCount = 11 + ReadBits(stream, 7);
+        }
+        while(repCount--) {
+            litLenDistTable[i++] = repVal;
+        }
+    }
+    ASSERT(i == lenCount);
+    ComputeHuffmanDict(litLen, HLIT, litLenDistTable);
+    ComputeHuffmanDict(dist, HDIST, litLenDistTable + HLIT);
+}
+
+HuffmanEntry lenExtraBits[] = {
+    {  3, 0},
+    {  4, 0},
+    {  5, 0},
+    {  6, 0},
+    {  7, 0},
+    {  8, 0},
+    {  9, 0},
+    { 10, 0},
+
+    { 11, 1},
+    { 13, 1},
+    { 15, 1},
+    { 17, 1},
+    
+    { 19, 2},
+    { 23, 2},
+    { 27, 2},
+    { 31, 2},
+
+    { 35, 3},
+    { 43, 3},
+    { 51, 3},
+    { 59, 3},
+
+    { 67, 4},
+    { 83, 4},
+    { 99, 4},
+    {115, 4},
+
+    {131, 5},
+    {163, 5},
+    {195, 5},
+    {227, 5},
+
+    {258, 0},
+};
+HuffmanEntry distExtraBits[] = {
+    {1, 0},
+    {2, 0},
+    {3, 0},
+    {4, 0},
+    {5, 1},
+    {7, 1},
+    {9, 2},
+    {13, 2},
+    {17, 3},
+    {25, 3},
+    {33, 4},
+    {49, 4},
+    {65, 5},
+    {97, 5},
+    {129, 6},
+    {193, 6},
+    {257, 7},
+    {385, 7},
+    {513, 8},
+    {769, 8},
+    {1025, 9},
+    {1537, 9},
+    {2049, 10},
+    {3073, 10},
+    {4097, 11},
+    {6145, 11},
+    {8193, 12},
+    {12289, 12},
+    {16385, 13},
+    {24577, 13},
+};
+
+
+void LZ77(BitStream* stream, HuffmanDictionary* litLenDict, HuffmanDictionary* distDict, LinearAllocator* out) {
+
+
+    for(u32 k = 0;; k++) {
+
+        u32 litLen = HuffmanDecode(litLenDict, stream);
+        if(litLen < 256) {
+            Mem<u8>(linear_allocate(out, 1)) = (u8)litLen;
+        }
+        else if(litLen > 256) {
+
+            litLen -= 257;
+            litLen = lenExtraBits[litLen].symbol + ReadBits(stream, lenExtraBits[litLen].bitLen);
+            u32 dist = HuffmanDecode(distDict, stream);
+            dist = distExtraBits[dist].symbol + ReadBits(stream, distExtraBits[dist].bitLen);
+
+            auto it = out->base + (out->top - dist);
+            for(u32 i = 0; i < litLen; i++) {
+                out->base[out->top++] = *it++;
+            }
+        }
+        else {
+            break;
+        }
+    }
 }
 u32 Inflate(byte* in, LinearAllocator* alloc) {
 
     BitStream stream{in, 0};
-    u32 size = 0;
-    for(;;) {
+    const u32 top = alloc->top;
 
-        bool final = ReadBits(&stream, 1);
-        if(final) break;
+    auto CMF = in[0];
+    auto FLG = in[1];
+    u16 check = (CMF * 256 + FLG);
+    ASSERT(check % 31 == 0);
 
+    u32 CM = ReadBits(&stream, 4);
+    u32 CINFO = ReadBits(&stream, 4);
+    u32 FCHECK = ReadBits(&stream, 5);
+    u32 FDICT = ReadBits(&stream, 1);
+    u32 FLEVEL = ReadBits(&stream, 2);
+
+    constexpr auto memSize = ((1 << 15) * 4 + (1 << 8)) * sizeof(HuffmanEntry);
+    byte mem[memSize];
+    auto localAlloc = make_linear_allocator(mem, memSize);
+
+    HuffmanDictionary dict = AllocateHuffmanDict(&localAlloc, 8);
+    HuffmanDictionary litLenHuffman = AllocateHuffmanDict(&localAlloc, 15);
+    HuffmanDictionary distHuffman = AllocateHuffmanDict(&localAlloc, 15);
+
+    HuffmanDictionary staticLitLenHuffman = AllocateHuffmanDict(&localAlloc, 15);
+    HuffmanDictionary staticDistHuffman = AllocateHuffmanDict(&localAlloc, 15);
+    ConstructStaticHuffman(&staticLitLenHuffman, &staticDistHuffman);
+
+    bool final;
+    do {
+
+        final = ReadBits(&stream, 1);
         u32 type = ReadBits(&stream, 2);
         ASSERT(type != 3);
 
         switch(type) {
         case 0:
             {
+                ASSERT(0);
                 FlushByte(&stream);
-                u16 len = Mem<u16> (stream.bytePtr);
-                u16 nlen = Mem<u16> (stream.bytePtr + 2);
+                u16 len = Mem<u16>(stream.bytePtr);
+                u16 nlen = Mem<u16>(stream.bytePtr + 2);
                 ASSERT(len == ~nlen);
                 stream.bytePtr += 4;
 
-                auto dst = linear_allocate(alloc, len);
-                memcpy(dst, stream.bytePtr, len);
-                stream.bytePtr += len;
+                auto dst = (byte*)linear_allocate(alloc, len);
+                for(u32 i = 0; i < len; i++) {
+                    dst[i] = *stream.bytePtr++;
+                }
                 break;
             }
         case 1:
+            ASSERT(0);
+            LZ77(&stream, &staticLitLenHuffman, &staticDistHuffman, alloc);
+            break;
         case 2:
-            {
-                for(;;) {
-
-                    if(type == 2) {
-
-                        u32 HLIT = ReadBits(&stream, 5) + 257;
-                        u32 HDIST = ReadBits(&stream, 5) + 1;
-                        u32 HCLEN = ReadBits(&stream, 4) + 4;
-
-                        u32 HCLENSwizzle[] = {
-                            16, 17, 18,0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-                        };
-                        u32 HCLENTable[19];
-                        u32 lenTable[512];
-                        
-                        ASSERT(HCLEN < SIZE_OF_ARRAY(HCLENSwizzle));
-                        for(u32 i = 0; i < HLIT; i++) {
-                            HCLENTable[HCLENSwizzle[i]] = ReadBits(&stream, 3);
-                        }
-                        for() {
-
-                            u32 encodedLen;
-                            u32 len;
-                            if(len <= 15) {
-
-                            }
-                            else if(len == 16) {
-                                
-                            }
-                            else if(len == 17) {
-
-                            }
-                            else if(len == 18) {
-
-                            }
-                        }
-
-                    }
-                    else {
-
-                    }
-                    u32 litLen = HuffmanDecode(&stream);
-                    if(litLen < 256) {
-                        u32 literal = ReadBits(&stream, 8);
-                        Mem<byte>(linear_allocate(alloc, 1)) = literal;
-                    }
-                    else if(litLen == 256) {
-                        break;
-                    }
-                    else {
-                        litLen = 256 - litLen;
-                        u32 dist = HuffmanDecode(&stream);
-
-                        auto it = alloc->base + (alloc->top - dist);
-                        for(u32 i = 0; i < litLen; i++) {
-                            alloc->base[alloc->top++] = it[i];
-                        }
-                    }
-                }
-                
-                break;
-            }
+            DynamicHuffman(&dict, &litLenHuffman, &distHuffman, &stream);
+            LZ77(&stream, &litLenHuffman, &distHuffman, alloc);
+            break;
         }
-    }
 
-    return size;
+    } while(!final);
+
+    return alloc->top - top;
 }
 
 PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
@@ -1725,7 +2003,7 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
 
     for(bool run = true; run ;) {
 
-        auto chunk = (PNGChunk*)mem;
+        const auto chunk = (PNGChunk*)mem;
         LOG_ASSERT((chunkCounter == 0) == (chunk->type == PNG_TYPE_STR('I', 'H', 'D', 'R')), "IHDR is not the first chunk");
 
         switch(chunk->type) {
@@ -1738,25 +2016,17 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
                 ihdrFound = true;
 
                 auto ihdr = Mem<IHDRPayload>(chunk->payload);
-                ihdr.height = ReverseByteOrder(ihdr.height);
-                ihdr.width = ReverseByteOrder(ihdr.width);
+                info.height = ReverseByteOrder(ihdr.height);
+                info.width = ReverseByteOrder(ihdr.width);
                 info.bitDepth = ihdr.bitDepth;
                 info.colorType = ihdr.colorType;
-                info.interlaceMethod = ihdr.filterMethod;
+                info.filterMethod = ihdr.filterMethod;
+                ihdr.interlaceMethod = ihdr.interlaceMethod;
 
                 LOG_ASSERT(PNGCheckColorTypeBitDepth(&info), "invalid bitdepth");
                 LOG_ASSERT(ihdr.compressionMethod == 0, "invalid compression method");
                 LOG_ASSERT(ihdr.interlaceMethod == 0, "invalid interlace method");
                 
-                const char* colorTypeStrs[] = {
-                    "grayscale",
-                    nullptr,
-                    "R,G,B triple",
-                    "palette",
-                    "grayscale + alpha",
-                    nullptr,
-                    "R,G,B,A",
-                };
 
                 break;
             }
@@ -1848,10 +2118,413 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
     }
 
     info.dataChunks = (PNGChunk**)linear_allocate(alloc, info.dataChunkCount * sizeof(PNGChunk*));
-    i = 0;
+    i = 1;
     for(auto it = dataChunks; it; it = it->next) {
-        info.dataChunks[i++] = it->item;
+        info.dataChunks[info.dataChunkCount - i] = it->item;
+        i++;
+    }
+
+    if(info.dataChunkCount) {
+
+        auto CMF = info.dataChunks[0]->payload[0];
+        auto FLG = info.dataChunks[0]->payload[1];
+        u16 check = (CMF * 256 + FLG);
+        ASSERT(check % 31 == 0);
+
+        u8 CM = CMF & 0xF;
+        u8 CINFO = CMF >> 4;
+        u8 FCHECK = FLG & 0x1F;
+        u8 FDICT = (FLG >> 5) & 1;
+        u8 FLEVEL = (FLG >> 6);
+        ASSERT(CM == 8);
     }
 
     return info;
+}
+
+u32 PNGDataSize(PNGInfo* png) {
+
+    u32 size = 0;
+    for(u32 i = 0; i < png->dataChunkCount; i++) {
+        auto chunk = png->dataChunks[i];
+        size += ReverseByteOrder(chunk->length);
+    }
+    return size;
+}
+constexpr u32 PixelChannelCounts[] = {
+    1,
+    0,
+    3,
+    1,
+    2,
+    0,
+    4,
+};
+u8 PaethPredictor(u32 a, u32 b, u32 c) {
+
+    u32 p = a + b - c;
+    u32 pa = Abs(p - a);
+    u32 pb = Abs(p - b);
+    u32 pc = Abs(p - c);
+
+    u8 Pr;
+    if (pa <= pb && pa <= pc) {
+        Pr = a;
+    }
+    else if (pb <= pc) {
+        Pr = b;
+    }
+    else {
+        Pr = c;
+    }
+    return Pr;
+}
+u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src, u32 outChannelN) {
+
+    ASSERT(info->filterMethod == 0);
+
+    u32 channelSize = info->bitDepth / 8;
+    u32 pixelSize = channelSize * PixelChannelCounts[info->colorType];
+    u32 scanLineSize = info->width * pixelSize;
+
+    i32 filterByteCount = pixelSize;
+    i32 outputByteCount = outChannelN * channelSize;
+
+    u8 null[outputByteCount+1]{};
+    u8* priorRow = null + outputByteCount;
+
+    const auto dstBegin = dst;
+    const auto srcBegin = src;
+
+    for(u32 i = 0; i < info->height; i++) {
+
+        
+        u8 filterType = *src++;
+        ASSERT(filterType < 5);
+
+        u8* currentRow = dst;
+        for (u32 k = 0; k < pixelSize; ++k) {
+            switch(filterType) {
+                case 0: *dst = *src; break;
+                case 1: *dst = *src; break;
+                case 2: *dst = (*src + *priorRow) & 255; break;
+                case 3: *dst = (*src + *priorRow >> 1) & 255; break;
+                case 4: *dst = (*src + PaethPredictor(0,*priorRow,0)) & 255; break;
+            }
+            dst++;
+            src++;
+            priorRow += (i != 0);
+        }
+
+        if(outChannelN == 4) {
+            *dst++ = 255;
+            priorRow += (i != 0);
+        }
+
+        #define BYTECAST(x)  ((u8) ((x) & 255))  // truncate int to byte without warnings
+        for (i32 j = info->width - 1; j >= 1;) {
+
+            for (i32 k = 0; k < filterByteCount; ++k) {
+
+                switch (filterType) {
+                case 0:
+                    dst[k] = src[k];
+                    break;
+                case 1:
+                    dst[k] = BYTECAST(src[k] + dst[k-outputByteCount]);
+                    break;
+                case 2:
+                    dst[k] = BYTECAST(src[k] + priorRow[k]);
+                    break;
+                case 3:
+                    dst[k] = BYTECAST(src[k] + ( (priorRow[k] + dst[k-outputByteCount]) >> 1 ));
+                    break;
+                case 4:
+                    dst[k] = BYTECAST(src[k] + PaethPredictor(dst[k-outputByteCount], priorRow[k], priorRow[k-outputByteCount]));
+                    break;
+                }
+            }
+            --j;
+            dst[filterByteCount] = 255;
+            src += filterByteCount;
+            dst += outputByteCount;
+            priorRow += (i == 0 ? 0 : outputByteCount);
+        }
+
+        /*
+        for(i32 j = 0; j < (info->width * pixelSize) - pixelSize; j++) {
+
+            switch (filterType) {
+            case 0:
+                *dst = *src;
+                break;
+            case 1:
+                *dst = BYTECAST(*src + dst[-outputByteCount]);
+                break;
+            case 2:
+                *dst = BYTECAST(*src + *priorRow);
+                break;
+            case 3:
+                *dst = BYTECAST(*src + ( (*priorRow + dst[-outputByteCount]) >> 1 ));
+                break;
+            case 4:
+                *dst = BYTECAST(*src + PaethPredictor(dst[-outputByteCount], *priorRow, priorRow[-outputByteCount]));
+                break;
+            }
+
+            src++;
+            dst++;
+            priorRow += (i != 0);
+
+            if(outChannelN == 4 && (dst - dstBegin) % 4 == 0) {
+                auto off = dst - dstBegin;
+                dst++;
+            }
+        }
+        */
+
+
+        priorRow = currentRow;
+
+    }
+    
+    return dst - dstBegin;
+}
+enum {
+   STBI__F_none=0,
+   STBI__F_sub=1,
+   STBI__F_up=2,
+   STBI__F_avg=3,
+   STBI__F_paeth=4,
+   // synthetic filters used for first scanline to avoid needing a dummy row of 0s
+   STBI__F_avg_first,
+   STBI__F_paeth_first
+};
+
+u8 first_row_filter[5] = {
+   STBI__F_none,
+   STBI__F_sub,
+   STBI__F_none,
+   STBI__F_avg_first,
+   STBI__F_paeth_first
+};
+
+i32 PaethPredictor(i32 a, i32 b, i32 c) {
+   
+   i32 p = a + b - c;
+   i32 pa = abs(p-a);
+   i32 pb = abs(p-b);
+   i32 pc = abs(p-c);
+   if (pa <= pb && pa <= pc) return a;
+   if (pb <= pc) return b;
+   return c;
+}
+
+u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN) {
+   
+    i32 bytes = (info->bitDepth == 16? 2 : 1);
+    i32 stride = info->width * outN * bytes;
+
+    i32 imgN = PixelChannelCounts[info->colorType];
+    i32 img_width_bytes = (((imgN * info->width * info->bitDepth) + 7) >> 3);
+    i32 filter_bytes = imgN * bytes;
+    i32 width = info->width;
+    i32 output_bytes = outN * bytes;
+
+    u8* const dstBegin = dst;
+    u8* const srcBegin = src;
+
+    ASSERT( outN == imgN || outN == imgN + 1);
+    i32 imgLen = (img_width_bytes + 1) * info->height;
+
+    for (i32 j = 0; j < info->height; ++j) {
+      
+        u8* cur = dstBegin + stride * j;
+        u8* prior;
+
+        i32 filter = *src++;
+        ASSERT(filter < 5);
+       
+        if (info->bitDepth < 8) {
+            ASSERT(img_width_bytes <= info->width);
+            cur += info->width * outN - img_width_bytes; // store output to the rightmost img_len bytes, so we can decode in place
+            filter_bytes = 1;
+            width = img_width_bytes;
+        }
+
+        prior = cur - stride; // bugfix: need to compute this after 'cur +=' computation above
+
+        // if first row, use special filter that doesn't sample previous row
+        if (j == 0) filter = first_row_filter[filter];
+
+        // handle first byte explicitly
+        for (i32 k = 0; k < filter_bytes; ++k) {
+            switch (filter) {
+                case STBI__F_none       : cur[k] = src[k]; break;
+                case STBI__F_sub        : cur[k] = src[k]; break;
+                case STBI__F_up         : cur[k] = BYTECAST(src[k] + prior[k]); break;
+                case STBI__F_avg        : cur[k] = BYTECAST(src[k] + (prior[k]>>1)); break;
+                case STBI__F_paeth      : cur[k] = BYTECAST(src[k] + PaethPredictor(0,prior[k],0)); break;
+                case STBI__F_avg_first  : cur[k] = src[k]; break;
+                case STBI__F_paeth_first: cur[k] = src[k]; break;
+            }
+        }
+
+        if(info->bitDepth == 8) {
+            if (imgN != outN) {
+                cur[imgN] = 255; // first pixel
+            }
+            src += imgN;
+            cur += outN;
+            prior += outN;
+        }
+        else if (info->bitDepth == 16) {
+            if (imgN != outN) {
+                cur[filter_bytes]   = 255; // first pixel top byte
+                cur[filter_bytes+1] = 255; // first pixel bottom byte
+            }
+            src += filter_bytes;
+            cur += output_bytes;
+            prior += output_bytes;
+        }
+        else {
+            src += 1;
+            cur += 1;
+            prior += 1;
+        }
+
+        // this is a little gross, so that we don't switch per-pixel or per-component
+        if (info->bitDepth < 8 || imgN == outN) {
+            
+            int nk = (width - 1) * filter_bytes;
+
+            #define STBI__CASE(f) \
+                case f:     \
+                    for (i32 k = 0; k < nk; ++k)
+            switch (filter) {
+                // "none" filter turns into a memcpy here; make that explicit.
+                case STBI__F_none:
+                    memcpy(cur, src, nk);
+                    break;
+                case STBI__F_sub:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + cur[k - filter_bytes]);
+                    }
+                    break;
+                case STBI__F_up:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + prior[k]);
+                    }
+                    break;
+                case STBI__F_avg:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + ((prior[k] + cur[k - filter_bytes])>>1));
+                    }
+                    break;
+                case STBI__F_paeth:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k - filter_bytes],prior[k],prior[k - filter_bytes]));
+                    }
+                    break;
+                case STBI__F_avg_first:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + (cur[k - filter_bytes] >> 1));
+                    }
+                    break;
+                case STBI__F_paeth_first:
+                    for (i32 k = 0; k < nk; ++k) {
+                        cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k - filter_bytes],0,0));
+                    }
+                    break;
+            }
+            #undef STBI__CASE
+            src += nk;
+        }  else {
+        
+            ASSERT(imgN + 1 == outN);
+            #define STBI__CASE(f) \
+                case f:     \
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) \
+                    for (i32 k = 0; k < filter_bytes; ++k)
+            switch (filter) {
+                STBI__CASE(STBI__F_none)         { cur[k] = src[k]; } break;
+                case STBI__F_sub:
+                    for (i32 i = info->width - 1; i >= 1; --i, cur[filter_bytes] = 255, src += filter_bytes, cur += output_bytes, prior += output_bytes) {
+                        for (i32 k = 0; k < filter_bytes; ++k) {
+                            cur[k] = BYTECAST(src[k] + cur[k - output_bytes]);
+                        }
+                    }
+                    break;
+                //STBI__CASE(STBI__F_sub)          { cur[k] = BYTECAST(src[k] + cur[k - output_bytes]); } break;
+                STBI__CASE(STBI__F_up)           { cur[k] = BYTECAST(src[k] + prior[k]); } break;
+                STBI__CASE(STBI__F_avg)          { cur[k] = BYTECAST(src[k] + ((prior[k] + cur[k- output_bytes])>>1)); } break;
+                STBI__CASE(STBI__F_paeth)        { cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],prior[k],prior[k- output_bytes])); } break;
+                STBI__CASE(STBI__F_avg_first)    { cur[k] = BYTECAST(src[k] + (cur[k- output_bytes] >> 1)); } break;
+                STBI__CASE(STBI__F_paeth_first)  { cur[k] = BYTECAST(src[k] + PaethPredictor(cur[k- output_bytes],0,0)); } break;
+            }
+            #undef STBI__CASE
+
+            // the loop above sets the high byte of the pixels' alpha, but for
+            // 16 bit png files we also need the low byte set. we'll do that here.
+            if(info->bitDepth == 16) {
+                cur = dstBegin + stride*j; // start at the beginning of the row again
+                for (i32 i = 0; i < info->width; ++i,cur += output_bytes) {
+                cur[filter_bytes + 1] = 255;
+                }
+            }
+        }
+    }
+
+    return info->width * info->height * outN;
+}
+
+u32 MemCmp(byte* p0, byte* p1 , u32 size) {
+
+    for(u32 i = 0; i < size; i++) {
+        if(p0[i] != p1[i]) {
+            return i;
+        }
+    }
+    return size;
+}
+ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc) {
+
+    const auto begin = alloc->top;
+
+    auto info = ParsePNGMemory(pngMemory, alloc);
+    u64 compressedImgSize = PNGDataSize(&info);
+    auto compressedImg = (byte*)linear_allocate(alloc, compressedImgSize);
+    auto dst = compressedImg;
+    
+    for(u32 i = 0; i < info.dataChunkCount; i++) {
+        u32 payloadSize = ReverseByteOrder(info.dataChunks[i]->length);
+        memcpy(dst, info.dataChunks[i]->payload, payloadSize);
+        dst += payloadSize;
+    }
+
+    auto decompressed = (byte*)linear_allocator_top(alloc);
+    auto decompressedSize = Inflate(compressedImg, alloc);
+
+    u8* pixelData = (u8*)linear_allocator_top(alloc);
+    auto imgSize = PNGReconstructFilter(&info, pixelData, decompressed, 4);
+    linear_allocate(alloc, imgSize);
+
+    u8* stbi = (u8*)linear_allocator_top(alloc);
+    auto stbiSize = PNGReconstructFilter_(&info, stbi, decompressed, 4);
+    ASSERT(stbiSize == imgSize);
+
+    auto cmp = MemCmp(stbi, pixelData, imgSize);
+
+    return {};
+    //alloc->top = begin;
+    //memcpy(linear_allocator_top(alloc), pixelData, imgSize);
+    
+    /*
+    ImageDescriptor descriptor;    
+    descriptor.height = info.height;
+    descriptor.width = info.width;
+    descriptor.img = (Pixel*)linear_allocate(alloc, imgSize);
+    */
+
+    //return descriptor;
 }

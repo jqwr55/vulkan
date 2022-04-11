@@ -817,17 +817,16 @@ MemBlock BackImgMemory(VkContext* ctx, VkDeviceMemory memory, GpuHeap* gpuAlloca
     return block;
 }
 
-VkTextureInfo LoadVkTexture(RenderContext* ctx, const char* path) {
+VkTextureInfo UploadVkTexture(RenderContext* ctx, ImageDescriptor img) {
 
-    i32 w,h, comp;
-    auto texels = stbi_load(path, &w, &h, &comp, STBI_rgb_alpha);
-    u32 imgSize = w * h * STBI_rgb_alpha;
+    u32 imgSize = img.width * img.height * 4;
+    auto texels = img.img;
 
     auto dst = (Pixel*)linear_top(&ctx->uploadMemory);
     memcpy(dst, texels, imgSize);
 
     VkTextureInfo ret;
-    ret.img = CreateImg2D(ctx, {(u32)w,(u32)h}, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    ret.img = CreateImg2D(ctx, {img.width,img.height}, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     ret.memory = BackImgMemory(&ctx->vkCtx, ctx->deviceMemory, &ctx->gpuAllocator, ret.img);
 
     VkCommandBuffer cmd;
@@ -864,7 +863,7 @@ VkTextureInfo LoadVkTexture(RenderContext* ctx, const char* path) {
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
     region.imageOffset = {0, 0, 0};
-    region.imageExtent = {(u32)w, (u32)h, 1};
+    region.imageExtent = {img.width,img.height, 1};
     VK_CALL(ctx->vkCtx.vkScratch, vkCmdCopyBufferToImage, cmd, ctx->hostBuffer, ret.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     VK_CALL(ctx->vkCtx.vkScratch, vkEndCommandBuffer, cmd);
 
@@ -2678,20 +2677,40 @@ void* ThreadLoop(void* mem) {
     }
 }
 
+void global_io_flush_wrapper(void* user) {
+    global_io_flush();
+}
+void global_print_wrapper(void* user, const char* format ...) {
+    
+    va_list args;
+    va_start(args, format);
+    auto end = print_fn_v(io.base+io.top, linear_allocator_free_size(&io), format, args);
+    va_end(args);
+
+    auto top = (byte*)linear_allocator_top(&io);
+    if( (end - io.base) >= io.cap) {
+        global_io_flush();
+        top = (byte*)linear_allocator_top(&io);
+
+        va_start(args, format);
+        end = print_fn_v(top, linear_allocator_free_size(&io), format, args);
+        va_end(args);
+
+        ASSERT(end != top);
+    }
+    linear_allocate(&io, end-top);
+}
+
+
 i32 main(i32 argc, const char** argv) {
 
-    auto mem = init_global_state(0, Megabyte(96), 512);
+    auto mem = init_global_state(0, Megabyte(256), 512);
 
-    {
-        auto size = ReadFile("../honk.png", mem);
-        auto alloc = make_linear_allocator(((byte*)mem + size), Megabyte(96) - size);
-        PrintPNGChunks(mem);
-        auto info = ParsePNGMemory(mem, &alloc);
+    auto size = ReadFile("../honk.png", mem);
+    auto alloc = make_linear_allocator(((byte*)mem + size), Megabyte(256) - size);
+    auto honk = MakeImagePNG(mem, &alloc);
 
-        global_io_flush();
-        exit(0);
-    }
-
+    exit(0);
     glfwInit();
 
     ThreadCommBlock comms;
@@ -2721,8 +2740,7 @@ i32 main(i32 argc, const char** argv) {
 
     u32 screenShot = 0;
 
-
-    auto texture = LoadVkTexture(&ctx, "../res/viking_room.png");
+    auto texture = UploadVkTexture(&ctx, honk);
     auto texID = RegisterTexture(&ctx, texture, ctx.textureSampler, ctx.textureDescriptors);
 
     auto info = LoadOBJ(ctx.uploadMemory.base, (byte*)linear_top(&ctx.uploadMemory), "../res/rooom.obj");
@@ -2777,7 +2795,7 @@ i32 main(i32 argc, const char** argv) {
                 for(u32 k = 0; k < 10; k++) {
 
                     instances[i * 10 + k].textureIndex = texID;
-                    instances[i * 10 + k].transform = ComputeRotarionXMat4(i * 0.1 + state.time * 0.2);
+                    instances[i * 10 + k].transform = ComputeRotarionXMat4(0);
                     instances[i * 10 + k].translation = {(f32)i * 2, 0, (f32)k * 2};
                 }
             }
