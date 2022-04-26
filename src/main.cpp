@@ -229,6 +229,7 @@ struct ThreadCommBlock {
     RingBuffer images;
     u32 x;
     u32 y;
+    RenderContext* ctx;
 };
 
 struct EngineState {
@@ -1094,14 +1095,14 @@ void CreateGraphicsPipeline(RenderContext* ctx) {
 
     auto allocSave = ctx->vkCtx.vkScratch;
     auto vertSource = (char*)linear_allocator_top(&ctx->vkCtx.vkScratch);
-    u64 vertSourceSize = ReadFile("./vertex.spv", (byte*)vertSource);
+    u64 vertSourceSize = ReadFile("./vertex.spv", (byte*)vertSource, linear_allocator_free_size(&ctx->vkCtx.vkScratch));
     if(vertSourceSize == ~u64(0)) {
         VkLog(&ctx->ioLogBuffer, "s", "File not found");
     }
     linear_allocate(&ctx->vkCtx.vkScratch, vertSourceSize);
 
     auto fragSource = (char*)linear_allocator_top(&ctx->vkCtx.vkScratch);
-    u64 fragSourceSize = ReadFile("./frag.spv", (byte*)fragSource);
+    u64 fragSourceSize = ReadFile("./frag.spv", (byte*)fragSource, linear_allocator_free_size(&ctx->vkCtx.vkScratch));
     if(fragSourceSize == ~u64(0)) {
         VkLog(&ctx->ioLogBuffer, "s", "File not found");
     }
@@ -1686,7 +1687,7 @@ VkHeaps CreateHeaps(RenderContext* ctx, byte* localMemory, u32 localMemorySize, 
                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
     VkBufferArgs argsHost{uniqe, uniqeCount, usageHost, VK_SHARING_MODE_CONCURRENT, true};
-    heap.hostBuffer = MakeVkBuffer(&ctx->vkCtx, heap.uploadAllocator.cap, argsHost);
+    heap.hostBuffer = MakeVkBuffer(&ctx->vkCtx, heap.uploadAllocator.cap-256, argsHost);
 
     auto usageDecie = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT   |
@@ -1697,6 +1698,9 @@ VkHeaps CreateHeaps(RenderContext* ctx, byte* localMemory, u32 localMemorySize, 
 
     VkBufferArgs argsDev{uniqe, uniqeCount, usageDecie, VK_SHARING_MODE_CONCURRENT, false};
     heap.deviceBuffer = MakeVkBuffer(&ctx->vkCtx, gpuAllocatorSize, argsDev);
+
+    VkMemoryRequirements pMemoryRequirements{};
+    VK_CALL(ctx->vkCtx.vkScratch, vkGetBufferMemoryRequirements, ctx->vkCtx.logicalDevice, heap.hostBuffer, &pMemoryRequirements);
 
     VK_CALL(ctx->vkCtx.vkScratch, vkBindBufferMemory, ctx->vkCtx.logicalDevice, heap.hostBuffer, heap.hostMemory, 0);
     VK_CALL(ctx->vkCtx.vkScratch, vkBindBufferMemory, ctx->vkCtx.logicalDevice, heap.deviceBuffer, heap.deviceMemory, 0);
@@ -1829,14 +1833,14 @@ void CreatePipeline(RenderContext* ctx) {
 
     auto save = ctx->vkCtx.vkScratch;
     auto vertSource = (char*)linear_allocator_top(&ctx->vkCtx.vkScratch);
-    u64 vertSourceSize = ReadFile("./vertex.spv", (byte*)vertSource);
+    u64 vertSourceSize = ReadFile("./vertex.spv", (byte*)vertSource, linear_allocator_free_size(&ctx->vkCtx.vkScratch));
     if(vertSourceSize == ~u64(0)) {
         VkLog(&ctx->ioLogBuffer, "s", "File not found");
     }
     linear_allocate(&ctx->vkCtx.vkScratch, vertSourceSize);
 
     auto fragSource = (char*)linear_allocator_top(&ctx->vkCtx.vkScratch);
-    u64 fragSourceSize = ReadFile("./frag.spv", (byte*)fragSource);
+    u64 fragSourceSize = ReadFile("./frag.spv", (byte*)fragSource, linear_allocator_free_size(&ctx->vkCtx.vkScratch));
     if(fragSourceSize == ~u64(0)) {
         VkLog(&ctx->ioLogBuffer, "s", "File not found");
     }
@@ -2008,7 +2012,7 @@ u32 RegisterTexture(RenderContext* ctx, VkTextureInfo texture, VkSampler sampler
     return slot;
 }
 
-void MakeRenderContext(RenderContext* ctx, byte* memory, u32 memorySize) {
+void MakeRenderContext(RenderContext* ctx, byte* memory, u32 memorySize, vec<u32,2> dims) {
 
     if(!glfwVulkanSupported()) {
         VkLog(&ctx->ioLogBuffer, "s", "Vulkan not supported\n");
@@ -2046,8 +2050,8 @@ void MakeRenderContext(RenderContext* ctx, byte* memory, u32 memorySize) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    ctx->width = 300;
-    ctx->height = 300;
+    ctx->width = dims.x;
+    ctx->height = dims.y;
     ctx->title = "vk_test";
     GLFW_CALL(ctx->glfwHandle = glfwCreateWindow(ctx->width, ctx->height, ctx->title, nullptr, nullptr));
     GLFW_CALL(glfwSetWindowUserPointer(ctx->glfwHandle, ctx));
@@ -2284,7 +2288,7 @@ void VkBeginCmd(VkContext* ctx, VkCommandBuffer buffer) {
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     VK_CALL(ctx->vkScratch, vkBeginCommandBuffer, buffer, &beginInfo);
 }
-void Update(EngineState *state) {
+void Update(EngineState *state, u64 deltaTime) {
 
     state->time += 0.01;
     state->delta++;
@@ -2308,7 +2312,7 @@ void Update(EngineState *state) {
     GLFW_CALL(keys |= KEY_SPACE & (~u32(0) * glfwGetKey(state->ctx->glfwHandle, GLFW_KEY_SPACE)));
     GLFW_CALL(auto ctrl = glfwGetKey(state->ctx->glfwHandle, GLFW_KEY_LEFT_CONTROL));
 
-    ComputeCameraVelocity(&state->camera, keys, 0.0001);
+    ComputeCameraVelocity(&state->camera, keys, 0.0001 * deltaTime);
     state->camera.position = state->camera.position + state->camera.vel;
     state->camera.vel = state->camera.vel * 0.95;
 
@@ -2508,11 +2512,6 @@ void OnDrawFlatRetireCapture(RenderContext* ctx, void* resources) {
 
 void RecordDrawFlatCmd(RenderContext* ctx, CmdState* cmdState, VkDescriptorSet descriptors, u32 imgIndex, u32 drawCount, DrawInfo* draws, u64 instanceOffset) {
 
-    u64 off = instanceOffset;
-    for(u32 i = 0; i < drawCount; i++) {
-        off += draws[i].instanceCount * sizeof(InstanceInfo);
-    }
-
     VkClearValue clearColor[2]{};
     clearColor[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     clearColor[1].depthStencil = {1.0f, 0};
@@ -2574,7 +2573,7 @@ u32 IssueSwapChainAcquire(EngineState* state, RenderContext* ctx, VkSemaphore si
         ctx->width = w;
         ctx->height = h;
         f32 ratio = (f32)w / (f32)h;
-        state->projection = ComputePerspectiveMat4(ToRadian(90.0f), ratio, 0.1f, 100.0f);
+        state->projection = ComputePerspectiveMat4(ToRadian(90.0f), ratio, 0.01f, 100.0f);
         RecreateSwapChain(ctx, w, h);
         goto img_acquire;
     }
@@ -2656,7 +2655,10 @@ void* ThreadLoop(void* mem) {
 
     auto block = (ThreadCommBlock*)mem;
     u32 counter = 0;
+
     char name[256];
+    char localMem[512];
+    LinearAllocator io = make_linear_allocator(localMem, 512);
 
     while(block->run) {
 
@@ -2670,6 +2672,9 @@ void* ThreadLoop(void* mem) {
             local_print((byte*)name, 256, "sus", "../bin/screen_shoot", counter++, ".png");
             stbi_write_png(name, block->x, block->y, STBI_rgb_alpha, img, block->x * STBI_rgb_alpha);
 
+            VkLog(&io, "ssc", "[general info] screenshot taken ", name, '\n');
+            VkFlushLog(&io);
+
             circular_advance_read(&block->images, imgSize);
             size = circular_read_size(&block->images, imgSize);
         }
@@ -2677,42 +2682,36 @@ void* ThreadLoop(void* mem) {
     }
 }
 
-void global_io_flush_wrapper(void* user) {
-    global_io_flush();
+void global_io_flush_wrapper(void* user, LinearAllocator* io) {
+
+    write(STDOUT_FILENO, io->base, io->top);
+    io->top = 0;
 }
-void global_print_wrapper(void* user, const char* format ...) {
-    
-    va_list args;
-    va_start(args, format);
-    auto end = print_fn_v(io.base+io.top, linear_allocator_free_size(&io), format, args);
-    va_end(args);
-
-    auto top = (byte*)linear_allocator_top(&io);
-    if( (end - io.base) >= io.cap) {
-        global_io_flush();
-        top = (byte*)linear_allocator_top(&io);
-
-        va_start(args, format);
-        end = print_fn_v(top, linear_allocator_free_size(&io), format, args);
-        va_end(args);
-
-        ASSERT(end != top);
-    }
-    linear_allocate(&io, end-top);
-}
-
-
 i32 main(i32 argc, const char** argv) {
 
-    auto mem = init_global_state(0, Megabyte(256), 512);
 
-    auto size = ReadFile("../general.jpg", mem);
-    auto alloc = make_linear_allocator(((byte*)mem + size), Megabyte(256) - size);
-    ParseJFIFMemory(mem, size, &alloc);
+    auto mem = init_global_state(0, Megabyte(256), 512);
+    auto alloc = make_linear_allocator((byte*)mem, Megabyte(256));
+    auto scratch = make_linear_allocator( (byte*)mem + Megabyte(252) , Megabyte(4));
+    
+    auto honkSize = ReadFile("../res/honk.png", scratch.base, scratch.cap);
+    ASSERT(honkSize != ~u64(0));
+    auto honkImg = MakeImagePNG(scratch.base, &alloc);
+
+    auto vikingRoomsize = ReadFile("../res/viking_room.png", scratch.base, scratch.cap);
+    ASSERT(vikingRoomsize != ~u64(0));
+    auto vikingRoomImg = MakeImagePNG(scratch.base, &alloc);
+   
+    auto generalSize = ReadFile("../res/tex.jpg", scratch.base, scratch.cap);
+    ASSERT(generalSize != ~u64(0));  
+    auto generalImg = LoadJPEG(scratch.base, generalSize, &alloc);
+
+    int x, y, comp;
+    stbi_load_from_memory(scratch.base, generalSize, &x, &y, &comp, STBI_rgb_alpha);
+    global_io_flush();
 
     exit(0);
     glfwInit();
-
     ThreadCommBlock comms;
     comms.run = true;
     comms.images = make_ring_buffer(mem, Megabyte(32));
@@ -2722,7 +2721,7 @@ i32 main(i32 argc, const char** argv) {
 
     EngineState state;
     RenderContext ctx;
-    MakeRenderContext(&ctx, mem , Megabyte(64));
+    MakeRenderContext(&ctx, mem , Megabyte(64), {640,480});
 
     i32 monitorCount = 0;
     GLFW_CALL(state.primary = glfwGetMonitors(&monitorCount)[0]); 
@@ -2736,21 +2735,54 @@ i32 main(i32 argc, const char** argv) {
     state.time = 0;
     state.delta = 0;
     state.fullscreen = false;
-    state.projection = ComputePerspectiveMat4(ToRadian(90.0f), ctx.width / (f32)ctx.height, 0.1f, 100.0f);
+    state.projection = ComputePerspectiveMat4(ToRadian(90.0f), ctx.width / (f32)ctx.height, 0.01f, 100.0f);
 
     u32 screenShot = 0;
 
-    auto texture = UploadVkTexture(&ctx, {});
-    auto texID = RegisterTexture(&ctx, texture, ctx.textureSampler, ctx.textureDescriptors);
+    auto honk = UploadVkTexture(&ctx, honkImg);
+    auto vikingRoom = UploadVkTexture(&ctx, vikingRoomImg);
+    auto general = UploadVkTexture(&ctx, generalImg);
 
-    auto info = LoadOBJ(ctx.uploadMemory.base, (byte*)linear_top(&ctx.uploadMemory), "../res/rooom.obj");
-    auto model = UploadModel(&ctx, info);
+    auto honkHandle = RegisterTexture(&ctx, honk, ctx.textureSampler, ctx.textureDescriptors);
+    auto generalHandle = RegisterTexture(&ctx, general, ctx.textureSampler, ctx.textureDescriptors);
+    auto vikingRoomHandle = RegisterTexture(&ctx, vikingRoom, ctx.textureSampler, ctx.textureDescriptors);
+
+    auto quad = (Vertex*)linear_top(&ctx.uploadMemory);
+    quad[0].pos = {0, 0, 0};
+    quad[0].uv = {0, 1};
+
+    quad[1].pos = {0, 1.f, 0};
+    quad[1].uv = {0, 0.f};
+
+    quad[2].pos = {1.f, 1.f, 0};
+    quad[2].uv = {1.f, 0.f};
+    
+    quad[3].pos = {1.f, 0, 0};
+    quad[3].uv = {1.f, 1.f};
+    u32* quadIndicies = (u32*)(quad+4);
+    quadIndicies[0] = 0;
+    quadIndicies[1] = 1;
+    quadIndicies[2] = 2;
+    quadIndicies[3] = 0;
+    quadIndicies[4] = 2;
+    quadIndicies[5] = 3;
+    LoadedInfo quadInfo;
+    quadInfo.indexOffset = (byte*)quadIndicies - ctx.uploadMemory.base;
+    quadInfo.indexSize = sizeof(u32) * 6;
+    quadInfo.vertexOffset = (byte*)quad - ctx.uploadMemory.base;
+    quadInfo.vertexSize = sizeof(Vertex) * 4;
+    auto quadModel = UploadModel(&ctx, quadInfo);
+
+    auto roomInfo = LoadOBJ(ctx.uploadMemory.base, (byte*)linear_top(&ctx.uploadMemory), "../res/rooom.obj");
+    auto roomModel = UploadModel(&ctx, roomInfo);
 
     auto block = allocate_gpu_block(&ctx.gpuAllocator, sizeof(InstanceInfo) * 512, sizeof(InstanceInfo));
 
-    DrawInfo draw;
-    draw.instanceCount = 1;
-    draw.model = model;
+    DrawInfo draws[2];
+    draws[0].instanceCount = 3;
+    draws[0].model = quadModel;
+    draws[1].instanceCount = 1;
+    draws[1].model = roomModel;
 
     CmdState cmds[2];
     u32 inFlightCmds = 0;
@@ -2761,12 +2793,15 @@ i32 main(i32 argc, const char** argv) {
     pthread_t thread0;
     pthread_create(&thread0, nullptr, ThreadLoop, &comms);
 
+    auto begin = std::chrono::high_resolution_clock::now();
     while(!glfwWindowShouldClose(ctx.glfwHandle)) {
         ScopedAllocator save(&ctx.vkCtx.vkScratch);
 
         screenShot++;
-        std::this_thread::sleep_for(milli_second_t(1));
-        Update(&state);
+        std::this_thread::sleep_for(milli_second_t(20));
+        auto end = std::chrono::high_resolution_clock::now();
+        Update(&state, std::chrono::duration_cast<milli_second_t>(end - begin).count());
+        begin = std::chrono::high_resolution_clock::now();
 
         GLFW_CALL(auto mKey = glfwGetKey(ctx.glfwHandle, GLFW_KEY_M) && screenShot > 10);
 
@@ -2778,7 +2813,7 @@ i32 main(i32 argc, const char** argv) {
             auto resources = (DrawflatCmdResources*)(resourcesMem + 4);
 
             resources->imgAcquired = AcquireResource(&ctx.semaphorePool);
-            auto img = IssueSwapChainAcquire(&state, &ctx, resources->imgAcquired, nullptr);
+            auto fboImg = IssueSwapChainAcquire(&state, &ctx, resources->imgAcquired, nullptr);
             resources->descriptor = AcquireResource(&ctx.descriptorSetPool);
             resources->renderCompleted = AcquireResource(&ctx.semaphorePool);
             resources->allocationCount = 2 + mKey;
@@ -2791,14 +2826,18 @@ i32 main(i32 argc, const char** argv) {
             renderArgs->projectionViewMatrix = state.projection * LookAt(state.camera.position, state.camera.position + state.camera.direction);
 
             auto instances = (InstanceInfo*)resources->allocations[1].ptr;
-            for(u32 i = 0; i < 10; i++) {
-                for(u32 k = 0; k < 10; k++) {
-
-                    instances[i * 10 + k].textureIndex = texID;
-                    instances[i * 10 + k].transform = ComputeRotarionXMat4(0);
-                    instances[i * 10 + k].translation = {(f32)i * 2, 0, (f32)k * 2};
-                }
-            }
+            instances[0].textureIndex = honkHandle;
+            instances[0].transform = ComputeRotarionXMat4(0);
+            instances[0].translation = {0, 0, 0};
+            instances[1].textureIndex = generalHandle;
+            instances[1].transform = ComputeRotarionXMat4(0);
+            instances[1].translation = {1.5, 0, 0};
+            instances[2].textureIndex = vikingRoomHandle;
+            instances[2].transform = ComputeRotarionXMat4(0);
+            instances[2].translation = {4, 0, 0};
+            instances[3].textureIndex = vikingRoomHandle;
+            instances[3].transform = ComputeRotarionYMat4(ToRadian(90.f));
+            instances[3].translation = {3.5, 0, 0};
 
             auto cmd = AcquireGraphicsResources(&ctx);
             cmd.resources = resourcesMem;
@@ -2839,7 +2878,7 @@ i32 main(i32 argc, const char** argv) {
             instanceBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             VK_CALL(ctx.vkCtx.vkScratch, vkCmdPipelineBarrier, cmd.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &instanceBarrier, 0, nullptr);
 
-            RecordDrawFlatCmd(&ctx, &cmd, resources->descriptor.set, img, 1, &draw, block.offset);
+            RecordDrawFlatCmd(&ctx, &cmd, resources->descriptor.set, fboImg, 2, draws, block.offset);
 
             if(mKey && screenShot > 10) {
                 screenShot = 0;
@@ -2847,7 +2886,7 @@ i32 main(i32 argc, const char** argv) {
                 resources->engine = &state;
                 VkImageMemoryBarrier imgBarrier{};
                 imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                imgBarrier.image = ctx.swapChainFrames[img].colorImg;
+                imgBarrier.image = ctx.swapChainFrames[fboImg].colorImg;
                 imgBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
                 imgBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                 imgBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2862,6 +2901,7 @@ i32 main(i32 argc, const char** argv) {
                 auto dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
                 VK_CALL(ctx.vkCtx.vkScratch, vkCmdPipelineBarrier, cmd.cmd, srcStage, dstStage, 0,  0, nullptr, 0, nullptr, 1, &imgBarrier);
 
+                resources->allocationCount;
                 resources->allocations[2].size = ctx.width * ctx.height * 4;
                 resources->allocations[2].ptr = linear_alloc(&ctx.uploadMemory, ctx.width * ctx.height * 4);
 
@@ -2873,11 +2913,11 @@ i32 main(i32 argc, const char** argv) {
                 region.bufferImageHeight = ctx.height;
                 region.bufferOffset = (byte*)resources->allocations[2].ptr - ctx.uploadMemory.base;
                 region.bufferRowLength = ctx.width;
-                VK_CALL(ctx.vkCtx.vkScratch, vkCmdCopyImageToBuffer, cmd.cmd, ctx.swapChainFrames[img].colorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ctx.hostBuffer, 1, &region);
+                VK_CALL(ctx.vkCtx.vkScratch, vkCmdCopyImageToBuffer, cmd.cmd, ctx.swapChainFrames[fboImg].colorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ctx.hostBuffer, 1, &region);
 
                 imgBarrier = {};
                 imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                imgBarrier.image = ctx.swapChainFrames[img].colorImg;
+                imgBarrier.image = ctx.swapChainFrames[fboImg].colorImg;
                 imgBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                 imgBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
                 imgBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2897,11 +2937,11 @@ i32 main(i32 argc, const char** argv) {
 
             VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             IssueCmdState(&ctx, &cmd, 1, &resources->imgAcquired, &waitStage, 1, &resources->renderCompleted);
-            IssuePresentImg(&ctx, img, resources->renderCompleted);
+            IssuePresentImg(&ctx, fboImg, resources->renderCompleted);
             cmds[inFlightCmds++] = cmd;
         }
         
-        global_print("fcuc", (f64)ctx.uploadMemory.top / (f64)ctx.uploadMemory.cap, ' ', ringAllocaotor.head, '\n');
+        //global_print("fcuc", (f64)ctx.uploadMemory.top / (f64)ctx.uploadMemory.cap, ' ', ringAllocaotor.head, '\n');
         VkFlushLog(&ctx.ioLogBuffer);
         global_io_flush();
     }
@@ -2909,8 +2949,10 @@ i32 main(i32 argc, const char** argv) {
     comms.run = false;
 
     VK_CALL(ctx.vkCtx.vkScratch, vkQueueWaitIdle, ctx.graphicsQueue);
-    DestroyTexture(&ctx.vkCtx, texture);
-    free_gpu_block(&ctx.gpuAllocator, texture.memory);
+    DestroyTexture(&ctx.vkCtx, honk);
+    //DestroyTexture(&ctx.vkCtx, vikingRoom);
+    free_gpu_block(&ctx.gpuAllocator, honk.memory);
+    //free_gpu_block(&ctx.gpuAllocator, vikingRoom.memory);
 
     for(u32 i = 0; i < inFlightCmds; i++) {
         RetireCmdState(&ctx, cmds + i);
@@ -2920,6 +2962,7 @@ i32 main(i32 argc, const char** argv) {
 
     void* ret;
     pthread_join(thread0, &ret);
-
+    
+    
     return 0;
 }

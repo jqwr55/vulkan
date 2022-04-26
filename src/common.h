@@ -163,7 +163,7 @@ T AbsDiff(T t0, T t1) {
     return max - min;
 }
 template <typename T>
-T Clamp(T t0, T max, T min) {
+T Clamp(T t0, T min, T max) {
     return Min(Max(t0, min), max);
 }
 template<typename T>
@@ -397,7 +397,7 @@ template<typename T>
 struct LocalList {
     LocalList* next;
     T item;
-    #define ALLOCATE_LOCAL_LIST(prev, size) prev = (decltype(prev))alloca(size + sizeof(decltype(prev)));
+    #define ALLOCATE_LOCAL_LIST(prev) prev = (decltype(prev))alloca( sizeof(*prev) );
 };
 
 _NO_INLINE
@@ -516,10 +516,11 @@ void global_print(const char* format ...);
 byte* local_print(byte* buffer, u32 buffer_size, const char* format ...);
 // uses global_malloc_debug
 
-u64 ReadFile(const char* fileName, byte* buffer);
+u64 ReadFile(const char* fileName, byte* buffer, u32 size);
+u64 ReadFile(const char* fileName, LinearAllocator* mem);
+byte* ReadFile(const char* fileName, byte* buffer, u32* size_);
 u64 ReadFileTerminated(const char* fileName, byte* buffer);
 byte* ReadFileTerminated(const char *fileName, byte *buffer, u32* size_);
-byte* ReadFile(const char* fileName, byte* buffer, u32* size_);
 
 struct Pixel {
     union {
@@ -1048,10 +1049,13 @@ template<typename T> struct SmallStaticBuffer2 {
         return *((T*)(base + memory + index * sizeof(T)));
     }
 };
+static int no = 0;
 template<typename unit>
 struct Timer {
     std::chrono::_V2::system_clock::time_point begin;
+    int m;
     Timer() {
+        m = no++;
         begin = std::chrono::high_resolution_clock::now();
     }
 
@@ -1069,7 +1073,7 @@ struct Timer {
     void PrintNow() {
         auto end = std::chrono::high_resolution_clock::now();
         auto delta = std::chrono::duration_cast<unit>(end - begin).count();
-        global_print("suc", "elapsed: ", delta, '\n');
+        global_print("usuc", m, " elapsed: ", delta, '\n');
     }
 
     ~Timer() {
@@ -1103,6 +1107,18 @@ _FORCE_INLINE u64 xy_to_morton_ (u64 x, u64 y) {
     return l | (r << 1);
 }
 */
+struct HuffmanEntry {
+    u16 symbol;
+    u16 bitLen;
+};
+struct HuffmanDictionary {
+
+    u32 maxCodeLen;
+    u32 count;
+    HuffmanEntry* entries;
+};
+HuffmanDictionary AllocateHuffmanDict(LinearAllocator* alloc, u32 maxCodeLen);
+void ComputeHuffmanTableJPEG(HuffmanDictionary* dict, u8* bits, u8* symbols);
 
 struct PNGChunk {
     u32 length;
@@ -1160,11 +1176,10 @@ struct PNGInfo {
     u8 interlaceMethod;
 };
 
-typedef void (local_io_flush)(void* user);
-typedef void (local_print_t)(void* user, const char* format ...);
+typedef void (local_io_flush)(void* user, LinearAllocator* io);
 struct Printer {
     void* user;
-    local_print_t* print;
+    LinearAllocator* io;
     local_io_flush* flush;
 };
 u16 ReverseByteOrder(u16 n);
@@ -1178,9 +1193,309 @@ u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src);
 u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN);
 ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc);
 
-
-
-struct JFIFInfo {
-
+enum JPEGEntropyType : u8 {
+	ENTROPY_HUFFMAN,
+	ENTROPY_ARITHMETIC
 };
-JFIFInfo ParseJFIFMemory(byte* mem, u32 size, LinearAllocator* alloc);
+enum JPEGMode : u8 {
+	
+    JPEG_BASELINE_SEQUINTAL_DCT,
+    JPEG_EXTENDEND_SEQUINTAL_DCT,
+    JPEG_PROGRESSIVE_DCT,
+    JPEG_LOSSLESS,
+
+	JPEG_DIFFERENTIAL_FRAME,
+};
+
+enum MarkerType : u8 {
+
+    SOF0 = 0xC0,
+    SOF1 = 0xC1,
+    SOF2 = 0xC2,
+    SOF3 = 0xC3,
+
+    SOF5 = 0xC5,
+    SOF6 = 0xC6,
+    SOF7 = 0xC7,
+
+    SOF8 = 0xC8,
+    SOF9 = 0xC9,
+    SOF10 = 0xCA,
+    SOF11 = 0xCB,
+
+    SOF13 = 0xCD,
+    SOF14 = 0xCE,
+    SOF15 = 0xCF,
+
+    DHT = 0xC4,
+    DAC = 0xCC,
+    RST0 = 0xD0,
+    SOI  = 0xD8,
+    EOI  = 0xD9,
+    SOS  = 0xDA,
+    DQT  = 0xDB,
+    DNL  = 0xDC,
+    DRI  = 0xDD,
+    DHP  = 0xDE,
+    EXP  = 0xDF,
+    APP0 = 0xE0,
+    JPG0 = 0xF0,
+    COM  = 0xFE,
+    TEM  = 0x01,
+    RES  = 0x02,
+};
+
+struct __attribute__ ((packed)) APP0Payload {
+    char identifier[5];
+    u8 major;
+    u8 minor;
+    u8 densityUnit;
+    u16 xDensity;
+    u16 yDensity;
+    u16 xThumbnail;
+    u16 yThumbnail;
+    u8 thumbnailData[];
+};
+struct JPEGMarker {
+    u8 signature;
+    u8 type;
+};
+
+struct __attribute__ ((packed)) JPEGMarkerSegment {
+    u8 signature;
+    u8 type;
+    u16 len;
+    byte payload[];
+};
+
+struct JPEGHV {
+    u8 vertSamplingFactor : 4;
+    u8 horizSamplingFactor : 4;
+};
+
+struct __attribute__ ((packed)) JPEGFrameComponentParameters {
+    u8 componentIndentifier;
+    JPEGHV samplingFactors;
+    u8 QTDstSelector;
+};
+
+struct __attribute__ ((packed)) JPEGFrameHeader {
+    u8 signature;
+    u8 type;
+    u16 len;
+    u8 samplePrecision;
+    u16 height;
+    u16 width;
+    u8 paramCount;
+    JPEGFrameComponentParameters params[];
+};
+
+struct JPEGTdTa {
+    u8 ACentropyCodingTableDstSelector : 4;
+    u8 DCentropyCodingTableDstSelector : 4;
+};
+
+struct __attribute__ ((packed)) JPEGScanComponentParameters {
+    u8 scanCompSelector;
+    JPEGTdTa selectors;
+};
+
+struct __attribute__ ((packed)) JPEGScanHeader {
+    u8 signature;
+    u8 type;
+    u16 len;
+    u8 paramCount;
+    JPEGScanComponentParameters params[];
+};
+
+struct JPEGAhAl {
+    u8 approxBitPositionLow : 4;
+    u8 approxBitPositionHigh : 4;
+};
+
+struct __attribute__ ((packed)) JPEGScanHeaderEnd {
+    u8 startSpectralPredictorSelection;
+    u8 endSpectralSelection;
+    JPEGAhAl bitPositions;
+};
+
+struct __attribute__ ((packed)) JPEGQuantizationParameter {
+    u8 dstIdentifier : 4;
+    u8 elemPrecision : 4;
+    u8 Q[64];
+};
+
+struct __attribute__ ((packed)) JPEGQuantizationTable {
+    u8 signature;
+    u8 type;
+    u16 len;
+    JPEGQuantizationParameter params[];
+};
+
+struct __attribute__ ((packed)) JPEGHuffmanParameter {
+    u8 huffDstIdentifier : 4;
+    u8 tableClass        : 4;
+    u8 L[16];
+    u8 V[];
+};
+
+struct __attribute__ ((packed)) JPEGHuffmanTable {
+    u8 signature;
+    u8 type;
+    u16 len;
+    JPEGHuffmanParameter params[];
+};
+
+struct __attribute__ ((packed)) JPEGArithmeticParameter {
+    u8 aritDstIdentifier : 4;
+    u8 tableClass        : 4;
+    u8 conditioningTableValue;
+};
+
+struct __attribute__ ((packed)) JPEGArithmeticCondTable {
+    u8 signature;
+    u8 type;
+    u16 len;
+    JPEGArithmeticParameter params[];
+};
+
+struct __attribute__ ((packed)) JPEGRestartInterval {
+    u8 signature;
+    u8 type;
+    u16 len;
+    u16 restartInterval;
+};
+
+struct __attribute__ ((packed)) JPEGCommentSegment {
+    u8 signature;
+    u16 len;
+    u8 type;
+    byte comment[];
+};
+
+struct __attribute__ ((packed)) JPEGDefineNoLines {
+    u8 signature;
+    u8 type;
+    u16 len;
+    u16 noLines;
+};
+
+constexpr u32 jpeg_de_zig_zag[] = {
+    0,  1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63,
+
+    63, 63, 63, 63, 63, 63, 63, 63,
+    63, 63, 63, 63, 63, 63, 63
+};
+constexpr u32 jpeg_zig_zag[] = {
+	0,	11, 15, 16, 14, 15, 27, 28,
+	12, 14, 17, 13, 16, 26, 29, 42,
+	13, 18, 12, 17, 25, 30, 41, 43,
+	19, 11, 18, 24, 31, 40, 44, 53,
+	10, 19, 23, 32, 39, 45, 52, 54,
+	20, 22, 33, 38, 46, 51, 55, 60,
+	21, 34, 37, 47, 50, 56, 59, 61,
+	35, 36, 48, 49, 57, 58, 62, 63,
+};
+
+
+struct JPEGComponentInfo {
+    u8 id;
+    u8 samplingFactorX;
+    u8 samplingFactorY;
+    u8 QTDstSelector;
+
+    u32 width;
+    u32 height;
+};
+struct JPEGScanCompInfo {
+    u8 id;
+    u8 entropyCodingSelectorDC;
+    u8 entropyCodingSelectorAC;
+};
+struct JPEGTables {
+    JPEGQuantizationParameter* quantizationTable[4];
+
+    union {
+        JPEGArithmeticParameter* arithmeticTables[8];
+        struct {
+            JPEGArithmeticParameter* arithmeticTablesDC[4];
+            JPEGArithmeticParameter* arithmeticTablesAC[4];
+        };
+    };
+    union {
+        JPEGHuffmanParameter* huffmanTables[8];
+        struct {
+            JPEGHuffmanParameter* huffmanTablesDC[4];
+            JPEGHuffmanParameter* huffmanTablesAC[4];
+        };
+    };
+};
+struct JPEGScanInfo {
+
+    JPEGTables tables;
+    byte* entropy;
+
+    u32 compCount;
+    JPEGScanCompInfo comps[4];
+    u8 freqSpectrumBeginPredictor;
+    u8 freqSpectrumEnd;
+    u8 al;
+    u8 ah;
+};
+struct JPEGFrameInfo {
+
+    JPEGFrameHeader* segment;
+    JPEGScanInfo* scans;
+    JPEGComponentInfo comps[4];
+    u32 scanCount;
+    u32 mcuX;
+    u32 mcuY;
+    u32 height;
+	u32 width;
+    u8 samplePrecision;
+    u8 mode;
+    bool hiearachical;
+};
+
+struct JPEGInfo {
+
+    const byte* src;
+    JPEGFrameInfo* frames;
+	u8* thumbnail;
+	u32 frameCount;
+	
+    u16 version;
+    u16 xDensity;
+    u16 yDensity;
+    u16 xThumbnail;
+    u16 yThumbnail;
+    u8 densityUnit;
+};
+
+struct BitStream {
+    byte* bytePtr;
+    u32 bitPtr;
+    u32 bitCnt;
+    u32 bitBuff;
+};
+JPEGInfo ParseJPEGMemory(byte* mem, u32 size, LinearAllocator* alloc);
+void PrintJPEGMemory(byte* mem, u32 size);
+i32 DecodeJPEGBlockHuffmanSeq(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, HuffmanDictionary* huffAC, u16 dequant[64], i32 pred);
+u32 MemCmp(void* p0, void* p1 , u32 size);
+void PrintHuffmanTableJPEG(u8* bits, u8* symbols);
+
+void FIDCT8(i16 dst[8], i16 src[8]);
+void SlowComputeJPEGIDCT2D(u8* dst, i16 src[64], u32 stride);
+void JPEGInverseDCT8x8(u8* dst, i16 src[64], u32 stride);
+ImageDescriptor LoadJPEG(byte* mem, u32 size, LinearAllocator* alloc);
+u32 MaxMemoryRequiredJPEG(byte* mem);
+i32 DecodeJPEGBlockHuffmanProgDC(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, u32 al, u32 ah, i32 pred);
+
+void stbi__idct_block(u8* out, int out_stride, short data[64]);

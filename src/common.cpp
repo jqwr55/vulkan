@@ -1,9 +1,10 @@
 #include <common.h>
 #include <cstddef>
 #include <memory>
+#include <math.h>
 
 
-byte *global_malloc_base;
+byte* global_malloc_base;
 malloc_handler_t global_out_of_memory_handler;
 LinearAllocator io;
 
@@ -99,7 +100,58 @@ f16 f32_to_f16(f32 f) {
 
     return ret;
 }
+u32 AddBinary(bool* a, u32 aCount, bool* b, u32 bCount, bool* result) {
 
+    i32 s = 0;
+    i32 i = aCount - 1;
+    i32 j = bCount - 1;
+    u32 ret = 0;
+    while (i >= 0 || j >= 0 || s == 1) {      
+        // Compute sum of last digits and carry
+        s += (i >= 0 ? a[i] : 0);
+        s += (j >= 0 ? b[j] : 0);
+        // If current digit sum is 1 or 3, add 1 to result
+        result[ret++] = s & 1;
+        // Compute carry
+        s /= 2;
+        // Move to next digits
+        i--;
+        j--;
+    }
+
+    // flip
+    for(u32 i = 0; i < ret/2; i++) {
+        result[i] = result[ret - i - 1];
+    }
+
+    return ret;
+}
+u32 IncBinary(bool* a, u32 aCount, bool* result) {
+
+    i32 s = 0;
+    i32 i = aCount - 1;
+    i32 j = 0;
+    u32 ret = 0;
+    while (i >= 0 || j >= 0 || s == 1) {      
+        // Compute sum of last digits and carry
+        s += (i >= 0 ? a[i] : 0);
+        s += (j >= 0 ? 1 : 0);
+        // If current digit sum is 1 or 3, add 1 to result
+        result[ret++] = s & 1;
+        // Compute carry
+        s /= 2;
+        // Move to next digits
+        i--;
+        j--;
+    }
+
+    // flip
+    for(u32 i = 0; i < ret/2; i++) {
+        result[i] = result[ret - i - 1];
+    }
+
+    return ret;
+}
 
 LinearAllocator make_linear_allocator(void* base, u32 size) {
     LinearAllocator stack;
@@ -943,6 +995,7 @@ u32 u64_to_hex_string(char *buffer, u32 buffer_size, u64 n) {
   
     // buffer too small
     if(buffer_size < 3) return 0;
+    buffer_size -= 3;
 
     // can't divide by 0 early out
     buffer[0] = '0';
@@ -1200,9 +1253,27 @@ byte* local_print(byte* buffer, u32 buffer_size, const char* format ...) {
     va_end(args);
     return end;
 }
+void local_printer(Printer* printer, const char *format, ...) {
+
+    va_list args;
+    va_start(args, format);
+    auto end = print_fn_v(printer->io->base + printer->io->top, printer->io->cap - printer->io->top, format, args);
+    va_end(args);
+    
+    if( (end - printer->io->base) >= printer->io->cap) {
+        
+        printer->flush(printer->user, printer->io);
+        auto top = (byte*)linear_allocator_top(printer->io);
+        va_start(args, format);
+        end = print_fn_v(top, linear_allocator_free_size(printer->io), format, args);
+        va_end(args);
+
+        ASSERT(end != printer->io->base + printer->io->cap);
+    }
+}
 
 
-u64 ReadFile(const char* fileName, byte* buffer) {
+u64 ReadFile(const char* fileName, byte* buffer, u32 bufferSize) {
 
     FILE* file = fopen(fileName, "r");
     u64 size = ~u64(0);
@@ -1211,6 +1282,28 @@ u64 ReadFile(const char* fileName, byte* buffer) {
         fseek(file, 0, SEEK_END);
         size = ftell(file);
         fseek(file, 0, SEEK_SET);
+        if(size > bufferSize) {
+            fclose(file);
+            return ~u64(0);
+        }
+
+        fread(buffer, size, 1, file);
+        fclose(file);
+    }
+
+    return size;
+}
+u64 ReadFile(const char* fileName, LinearAllocator* mem) {
+
+    FILE* file = fopen(fileName, "r");
+    u64 size = ~u64(0);
+    if(file) {
+
+        fseek(file, 0, SEEK_END);
+        size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+
+        auto buffer = (byte*)linear_allocate(mem, size);
 
         fread(buffer, size, 1, file);
         fclose(file);
@@ -1481,7 +1574,7 @@ bool PNGCheckColorTypeBitDepth(PNGInfo* info) {
 void PrintPNGChunks(const byte* pngMemory, Printer printer) {
 
     if(!VerifyPngSignature(pngMemory)) {
-        printer.print(printer.user, "s", "signature missmatch\n");
+        local_printer(&printer, "s", "signature missmatch\n");
     }
 
     bool firstIdat = true;
@@ -1493,7 +1586,7 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
         case PNG_TYPE_STR('I', 'H', 'D', 'R'):
             {
                 
-                printer.print(printer.user, "xs", mem - pngMemory, " IHDR\n");
+                local_printer(&printer, "xs", mem - pngMemory, " IHDR\n");
 
                 auto ihdr = Mem<IHDRPayload>(chunk->payload);
                 ihdr.height = ReverseByteOrder(ihdr.height);
@@ -1508,21 +1601,21 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
                     "R,G,B,A",
                 };
 
-                printer.print(printer.user, "suc", " height: ", (u64)ihdr.height, '\n');
-                printer.print(printer.user, "suc", " width: ", (u64)ihdr.width, '\n');
-                printer.print(printer.user, "suc", " bitDepth: ", (u64)ihdr.bitDepth, '\n');
-                printer.print(printer.user, "sucss", " colorType: ", (u64)ihdr.colorType, '(', colorTypeStrs[ihdr.colorType], ")\n");
-                printer.print(printer.user, "su", " compressionMethod: ", (u64)ihdr.compressionMethod);
+                local_printer(&printer, "suc", " height: ", (u64)ihdr.height, '\n');
+                local_printer(&printer, "suc", " width: ", (u64)ihdr.width, '\n');
+                local_printer(&printer, "suc", " bitDepth: ", (u64)ihdr.bitDepth, '\n');
+                local_printer(&printer, "sucss", " colorType: ", (u64)ihdr.colorType, '(', colorTypeStrs[ihdr.colorType], ")\n");
+                local_printer(&printer, "su", " compressionMethod: ", (u64)ihdr.compressionMethod);
                 if(ihdr.compressionMethod == 0) {
-                    printer.print(printer.user, "s", "(deflate)\n");
+                    local_printer(&printer, "s", "(deflate)\n");
                 }
-                printer.print(printer.user, "suc", " filterMethod: ", (u64)ihdr.filterMethod, '\n');
-                printer.print(printer.user, "suc", " interlaceMethod: ", (u64)ihdr.interlaceMethod, '\n');
+                local_printer(&printer, "suc", " filterMethod: ", (u64)ihdr.filterMethod, '\n');
+                local_printer(&printer, "suc", " interlaceMethod: ", (u64)ihdr.interlaceMethod, '\n');
                 break;
             }
         case PNG_TYPE_STR('I', 'D', 'A', 'T'):
             {
-                printer.print(printer.user, "xs", mem - pngMemory, " IDAT\n");
+                local_printer(&printer, "xs", mem - pngMemory, " IDAT\n");
 
                 if(firstIdat) {
                     firstIdat = false;
@@ -1532,7 +1625,7 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
 
                     u16 check = (CMF * 256 + FLG);
                     if(check % 31 != 0) {
-                        printer.print(printer.user, "s", " zlib corruption: CMF*256 + FLG is not multiple of 31\n");
+                        local_printer(&printer, "s", " zlib corruption: CMF*256 + FLG is not multiple of 31\n");
                     }
 
                     u8 CM = CMF & 0xF;
@@ -1541,18 +1634,18 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
                     u8 FDICT = (FLG >> 5) & 1;
                     u8 FLEVEL = (FLG >> 6);
 
-                    printer.print(printer.user, "suc", " CM: ", (u64)CM, '\n');
-                    printer.print(printer.user, "suc", " CINFO: ", (u64)CINFO, '\n');
-                    printer.print(printer.user, "suc", " FCHECK: ", (u64)FCHECK, '\n');
-                    printer.print(printer.user, "suc", " FDICT: ", (u64)FDICT, '\n');
-                    printer.print(printer.user, "suc", " FLEVEL: ", (u64)FLEVEL, '\n');
+                    local_printer(&printer, "suc", " CM: ", (u64)CM, '\n');
+                    local_printer(&printer, "suc", " CINFO: ", (u64)CINFO, '\n');
+                    local_printer(&printer, "suc", " FCHECK: ", (u64)FCHECK, '\n');
+                    local_printer(&printer, "suc", " FDICT: ", (u64)FDICT, '\n');
+                    local_printer(&printer, "suc", " FLEVEL: ", (u64)FLEVEL, '\n');
                 }
 
                 break;
             }
         case PNG_TYPE_STR('I', 'E', 'N', 'D'):
             {
-                printer.print(printer.user, "xs", mem - pngMemory, " IEND\n");
+                local_printer(&printer, "xs", mem - pngMemory, " IEND\n");
                 run = false;
                 break;
             }
@@ -1562,7 +1655,7 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
                 auto keyWordLen = str_len((const char*)chunk->payload);
                 auto chunkS = ReverseByteOrder(chunk->length);
                 auto textLen = chunkS - keyWordLen;
-                printer.print(printer.user, "xss*cs*c", mem - pngMemory, " tEXt\n ", chunk->payload, keyWordLen, ' ', chunk->payload + keyWordLen, textLen, '\n');
+                local_printer(&printer, "xss*cs*c", mem - pngMemory, " tEXt\n ", chunk->payload, keyWordLen, ' ', chunk->payload + keyWordLen, textLen, '\n');
 
                 break;
             }
@@ -1578,12 +1671,12 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
         case PNG_TYPE_STR('h', 'I', 'S', 'T'):
         case PNG_TYPE_STR('t', 'I', 'M', 'E'):
             {
-                printer.print(printer.user, "xcs*c", mem - pngMemory, ' ', &chunk->type, 4, '\n');
+                local_printer(&printer, "xcs*c", mem - pngMemory, ' ', &chunk->type, 4, '\n');
                 break;
             }
         default:
             {
-                printer.print(printer.user, "xss*c", mem - pngMemory, " unkonw chunk: ", &chunk->type, 4, '\n');
+                local_printer(&printer, "xss*c", mem - pngMemory, " unkonw chunk: ", &chunk->type, 4, '\n');
                 break;
             }
         }
@@ -1592,14 +1685,10 @@ void PrintPNGChunks(const byte* pngMemory, Printer printer) {
         mem = (byte*)(end + 1);
     }
 
-    printer.flush(printer.user);
+    printer.flush(printer.user, printer.io);
 }
 
 
-struct BitStream {
-    byte* bytePtr;
-    u32 bitPtr;
-};
 u32 PeakBits(const BitStream* stream, u32 bitCount) {
 
     ASSERT(bitCount < 33);
@@ -1618,13 +1707,160 @@ u32 PeakBits(const BitStream* stream, u32 bitCount) {
 
         bitPtr++;
         if(bitPtr == 8) {
-           b = *(++bytePtr);
-           bitPtr = 0;
+            b = *(++bytePtr);
+            bitPtr = 0;
         }
     }
 
     return ret;    
 }
+u32 PeakBitsReversed(const BitStream* stream, u32 bitCount) {
+
+    ASSERT(bitCount < 33);
+
+    auto bitPtr = stream->bitPtr;
+    auto bytePtr = stream->bytePtr;
+
+    bytePtr += bitPtr >> 3;
+    bitPtr &= 7;
+
+    byte b = *bytePtr;
+    if(b == 0xFF) {
+        bytePtr++;
+        byte fill = *(bytePtr++);
+        while(fill == 0xFF) {
+            fill = *(bytePtr++);
+        }
+        ASSERT(fill == 0);
+    }
+    u32 ret = 0;
+    for(u32 i = 0; i < bitCount; i++) {
+        
+        u32 bit = (b >> (7 - bitPtr)) & 1;
+        ret |= bit << (31-i);
+
+        bitPtr++;
+        if(bitPtr == 8) {
+            b = *(++bytePtr);
+
+            if(b == 0xFF) {
+                bytePtr++;
+                byte fill = *(bytePtr++);
+                while(fill == 0xFF) {
+                    fill = *(bytePtr++);
+                }
+                ASSERT(fill == 0);
+            }
+
+            bitPtr = 0;
+        }
+    }
+
+    return ret;
+}
+
+#define stbi_lrot(x,y) (((x) << (y)) | ((x) >> (-(y) & 31)))
+
+void GrowBitBuffJPEG(BitStream* stream) {
+
+    do {
+        u32 b = *stream->bytePtr++;
+        if (b == 0xFF) {
+            u32 c = *stream->bytePtr++;
+            while (c == 0xFF) {
+                c = *stream->bytePtr++;
+            }
+            
+        }
+        stream->bitBuff |= b << (24 - stream->bitCnt);
+        stream->bitCnt += 8;
+    } while (stream->bitCnt <= 24);
+}
+u32 ReadBitsJPEG(BitStream* stream, u32 bitCnt) {
+
+    ASSERT(bitCnt < 33);
+    if(stream->bitCnt < bitCnt) {
+        GrowBitBuffJPEG(stream);
+    }
+
+    u32 mask = (1 << bitCnt) - 1;
+
+    u32 k = stbi_lrot(stream->bitBuff, bitCnt);
+    stream->bitBuff = k & (~mask);
+    k &= mask;
+    stream->bitCnt -= bitCnt;
+    return k;
+}
+u32 PeakBitsJPEG(const BitStream* stream, u32 bitCnt) {
+
+    ASSERT(bitCnt < 33);
+    auto copy = *stream;
+    if(copy.bitCnt < bitCnt) {
+        GrowBitBuffJPEG(&copy);
+    }
+
+    u32 mask = (1 << bitCnt) - 1;
+    u32 ret = stbi_lrot(copy.bitBuff, bitCnt);
+    ret &= mask;
+    return ret;
+}
+void SkipBitsJPEG(BitStream* stream, u32 bitCnt) {
+
+
+    if(stream->bitCnt < bitCnt) {
+        GrowBitBuffJPEG(stream);
+    }
+    stream->bitBuff <<= bitCnt;
+    stream->bitCnt -= bitCnt;
+}
+
+/*
+u32 ReadBitsReversed(BitStream* stream, u32 bitCount) {
+
+    ASSERT(bitCount < 33);
+
+    auto bitPtr = stream->bitPtr;
+    auto bytePtr = stream->bytePtr;
+
+    bytePtr += bitPtr >> 3;
+    bitPtr &= 7;
+
+    byte b = *bytePtr;
+    if(b == 0xFF) {
+        bytePtr++;
+        byte fill = *(bytePtr++);
+        while(fill == 0xFF) {
+            fill = *(bytePtr++);
+        }
+        ASSERT(fill == 0);
+    }
+    u32 ret = 0;
+    for(u32 i = 0; i < bitCount; i++) {
+        
+        u32 bit = (b >> (7 - bitPtr)) & 1;
+        ret |= bit << (31-i);
+
+        bitPtr++;
+        if(bitPtr == 8) {
+            b = *(++bytePtr);
+            if(b == 0xFF) {
+                bytePtr++;
+                byte fill = *(bytePtr++);
+                while(fill == 0xFF) {
+                    fill = *(bytePtr++);
+                }
+                ASSERT(fill == 0);
+            }
+            bitPtr = 0;
+        }
+    }
+
+    stream->bitPtr = bitPtr;
+    stream->bytePtr = bytePtr;
+
+    return ret;
+}
+*/
 u32 ReadBits(BitStream* stream, u32 bitCount) {
 
     ASSERT(bitCount < 33);
@@ -1644,8 +1880,8 @@ u32 ReadBits(BitStream* stream, u32 bitCount) {
 
         bitPtr++;
         if(bitPtr == 8) {
-           b = *(++bytePtr);
-           bitPtr = 0;
+            b = *(++bytePtr);
+            bitPtr = 0;
         }
     }
 
@@ -1672,6 +1908,18 @@ void FlushByte(BitStream* stream) {
     stream->bitPtr = 0;
 }
 
+template<typename T>
+void PrintBits(T c) {
+
+    constexpr u32 BIT_COUNT = sizeof(T)*8;
+    for(u32 i = 0; i < BIT_COUNT; i++) {
+
+        auto bit = (c >> ((BIT_COUNT-1) - i)) & 1;
+        global_print("u", (u32)bit);
+    }
+    global_print("c", '\n');
+    global_io_flush();
+}
 
 u32 ReverseBits(u32 c, u32 len) {
 
@@ -1687,16 +1935,7 @@ u32 ReverseBits(u32 c, u32 len) {
     return reversedCode;
 }
 
-struct HuffmanEntry {
-    u16 symbol;
-    u16 bitLen;
-};
-struct HuffmanDictionary {
 
-    u32 maxCodeLen;
-    u32 count;
-    HuffmanEntry* entries;
-};
 HuffmanDictionary AllocateHuffmanDict(LinearAllocator* alloc, u32 maxCodeLen) {
 
     HuffmanDictionary ret;
@@ -1734,8 +1973,95 @@ void ComputeHuffmanDict(HuffmanDictionary* dict, u32 count, u32* codeLens) {
             for(u32 k = 0; k < (1 << upperBitCount); k++) {
                 
                 u32 index = (k << len) | c;
+                auto e = dict->entries + index;
+                ASSERT(dict->entries[index].bitLen == 0);
+                
                 dict->entries[index].bitLen = len;
                 dict->entries[index].symbol = i;
+            }
+        }
+    }
+}
+void PrintHuffmanTableJPEG(u8* bits, u8* symbols) {
+
+    u32 sizes[257];
+    u32 sizeCount = 0;
+
+    for (u32 i = 0; i < 16; ++i) {
+        for (u32 j = 0; j < bits[i]; ++j) {
+            sizes[sizeCount++] = i+1;
+        }
+    }
+    sizes[sizeCount] = 0;
+
+    u32 lenFreqs[17]{};
+    for(u32 i = 0; i < sizeCount; i++) {
+        lenFreqs[sizes[i]]++;
+    }
+    u32 code = 0;
+    u32 nextCode[17]{};
+    for(u32 i = 1; i < SIZE_OF_ARRAY(nextCode); i++) {
+        code = (code + lenFreqs[i - 1]) << 1;
+        nextCode[i] = code;
+    }
+
+    global_print("s", "symbol\tcode\tlen\n");
+    u32 symbolIndex = 0;
+    for(u32 i = 0; i < sizeCount; i++) {
+        
+        auto len = sizes[i];
+        if(len) {
+
+            u32 c = nextCode[len]++;
+            u16 symbol = (u16)symbols[symbolIndex++];
+            global_print("ucucuc", symbol, '\t', c, '\t', len, '\n');
+        }
+    }    
+    global_print("c", '\n');
+    global_io_flush();
+}
+void ComputeHuffmanTableJPEG(HuffmanDictionary* dict, u8* bits, u8* symbols) {
+
+    memset(dict->entries, 0, sizeof(HuffmanEntry) * dict->count);
+    u32 sizes[257];
+    u32 sizeCount = 0;
+
+    for (u32 i = 0; i < 16; ++i) {
+        for (u32 j = 0; j < bits[i]; ++j) {
+            sizes[sizeCount++] = i+1;
+        }
+    }
+    sizes[sizeCount] = 0;
+
+    u32 lenFreqs[17]{};
+    for(u32 i = 0; i < sizeCount; i++) {
+        lenFreqs[sizes[i]]++;
+    }
+    u32 code = 0;
+    u32 nextCode[17]{};
+    for(u32 i = 1; i < SIZE_OF_ARRAY(nextCode); i++) {
+        code = (code + lenFreqs[i - 1]) << 1;
+        nextCode[i] = code;
+    }
+
+    u32 symbolIndex = 0;
+    for(u32 i = 0; i < sizeCount; i++) {
+        
+        auto len = sizes[i];
+        if(len) {
+
+            u32 c = nextCode[len]++;
+            u16 symbol = (u16)symbols[symbolIndex++];
+            u32 lowerBitCount = dict->maxCodeLen - len;
+
+            for(u32 k = 0; k < (1 << lowerBitCount); k++) {
+                
+                u32 index = (c << lowerBitCount) | k;
+                auto e = dict->entries + index;
+                ASSERT(dict->entries[index].bitLen == 0);
+
+                dict->entries[index].bitLen = len;
+                dict->entries[index].symbol = symbol;
             }
         }
     }
@@ -1747,6 +2073,14 @@ u32 HuffmanDecode(HuffmanDictionary* dict, BitStream* stream) {
     ASSERT(index < dict->count);
     auto entry = dict->entries + index;
     SkipBits(stream, dict->entries[index].bitLen);
+    return dict->entries[index].symbol;
+}
+u32 HuffmanDecodeJPEG(HuffmanDictionary* dict, BitStream* stream) {
+
+    u32 index = PeakBitsJPEG(stream, dict->maxCodeLen);
+    ASSERT(index < dict->count);
+    auto entry = dict->entries + index;
+    SkipBitsJPEG(stream, dict->entries[index].bitLen);
     return dict->entries[index].symbol;
 }
 
@@ -2033,7 +2367,7 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
         case PNG_TYPE_STR('I', 'D', 'A', 'T'):
             {
                 LocalList<PNGChunk*>* tmp;
-                ALLOCATE_LOCAL_LIST(tmp, sizeof(LocalList<PNGChunk*>));
+                ALLOCATE_LOCAL_LIST(tmp);
                 tmp->item = chunk;
                 tmp->next = dataChunks;
                 dataChunks = tmp;
@@ -2087,7 +2421,7 @@ PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc) {
                 auto textLen = chunkS - keyWordLen;
 
                 LocalList<PNGComment>* tmp;
-                ALLOCATE_LOCAL_LIST(tmp, sizeof(LocalList<PNGComment>));
+                ALLOCATE_LOCAL_LIST(tmp);
                 tmp->item.keyWord = (const char*)chunk->payload;
                 tmp->item.keyWordSize = keyWordLen;
                 tmp->item.textSize = textLen;
@@ -2478,10 +2812,13 @@ u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN) {
     return info->width * info->height * outN;
 }
 
-u32 MemCmp(byte* p0, byte* p1 , u32 size) {
+u32 MemCmp(void* p0, void* p1 , u32 size) {
+
+    byte* s0 = (byte*)p0;
+    byte* s1 = (byte*)p1;
 
     for(u32 i = 0; i < size; i++) {
-        if(p0[i] != p1[i]) {
+        if(s0[i] != s1[i]) {
             return i;
         }
     }
@@ -2490,8 +2827,8 @@ u32 MemCmp(byte* p0, byte* p1 , u32 size) {
 ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc) {
 
     const auto begin = alloc->top;
-
     auto info = ParsePNGMemory(pngMemory, alloc);
+
     u64 compressedImgSize = PNGDataSize(&info);
     auto compressedImg = (byte*)linear_allocate(alloc, compressedImgSize);
     auto dst = compressedImg;
@@ -2509,175 +2846,1882 @@ ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc) {
     auto imgSize = PNGReconstructFilter(&info, pixelData, decompressed, 4);
     
     alloc->top = begin;
-    memcpy(linear_allocator_top(alloc), pixelData, imgSize);
-    ImageDescriptor descriptor;    
+    ImageDescriptor descriptor;
     descriptor.height = info.height;
     descriptor.width = info.width;
-    descriptor.img = (Pixel*)linear_allocate(alloc, imgSize);
+    descriptor.img = (Pixel*)linear_allocate(alloc, info.height * info.width * 4);
+    for(u32 i = 0; i < info.height * info.width * 4; i++) {
+        ((byte*)descriptor.img)[i] = pixelData[i];
+    }
 
     return descriptor;
 }
 
 
-struct JFIFMarkerNopayload {
-    u8 signature;
-    u8 type;
-};
-struct __attribute__ ((packed)) JFIFMarker {
-    u8 signature;
-    u8 type;
-    u16 length;
-    byte payload[];
-};
-struct MarkerDescriptor {
-    u8 type;
-    bool payload;
-    const char* name;
-};
-MarkerDescriptor JFIFMarkers[] = {
-    {0xD8, 0, "SOI"},
-    {0xC0, 1, "SOF0"},
-    {0xC2, 1, "SOF2"},
-    {0xC4, 1, "DHT"},
-    {0xDB, 1, "DQT"},
-    {0xDD, 1, "DRI"},
-    {0xD0, 0, "RSTn"},
-    {0xE0, 1, "APP"},
-    {0xFE, 1, "COM"},
-    {0xDA, 1, "SOS"},
-    {0xD9, 0, "EOI"},
-};
-struct __attribute__ ((packed)) APP0Payload {
-    char identifier[5];
-    u8 major;
-    u8 minor;
-    u8 densityUnit;
-    u16 xDensity;
-    u16 yDensity;
-    u16 xThumbnail;
-    u16 yThumbnail;
-    u8 thumbnailData[];
-};
-bool VerifyJFIFSignature(byte* mem) {
 
-    auto SOI = (JFIFMarkerNopayload*)mem;
-    auto APP = (JFIFMarker*)(mem + 2);
+APP0Payload* VerifyJFIFignature(const byte* mem) {
 
-    auto q = Mem<u32>(mem);
+    JPEGArithmeticCondTable t;
 
-    if(SOI->signature != 0xFF || SOI->type != 0xD8 || APP->signature != 0xFF ||APP->type != 0xE0) {
-        return false;
+    auto SOI = (JPEGMarker*)mem;
+    auto APP = (JPEGMarkerSegment*)(mem + 2);
+
+    constexpr u32 signature = u32(0xE0) << 24 | u32(0xFF) << 16 | u32(0xD8) << 8 | u32(0xFF);
+    if(Mem<u32>((u32*)mem) != signature) {
+        return nullptr;
     }
 
-    auto len = ReverseByteOrder(APP->length);
+    auto len = ReverseByteOrder(APP->len);
     ASSERT(len > 0 && len < 255);
     len -= sizeof(APP0Payload);
     if(len % 3 != 0) {
-        return false;
+        return nullptr;
     }
 
     auto appInfo = (APP0Payload*)APP->payload;
     if(!str_cmp("JFIF", appInfo->identifier)) {
-        return false;
+        return nullptr;
     }
 
     if(appInfo->densityUnit > 2) {
-        return false;
+        return nullptr;
     }
 
     if(appInfo->xDensity == 0 || appInfo->yDensity == 0) {
-        return false;
+        return nullptr;
     }
 
-    return true;
+    if(len) {
+        len == (appInfo->yThumbnail * appInfo->xThumbnail * 3) ? appInfo : nullptr;
+    }
+
+    return appInfo;
 }
 
-JFIFInfo ParseJFIFMemory(byte* mem, u32 size, LinearAllocator* alloc) {
+JPEGMarker* GetMarker(const byte* mem) {
+   
+    auto it = (JPEGMarker*)mem;
+    while(it->signature != 0xFF || it->type == 0) {
 
-    if(!VerifyJFIFSignature(mem)) {
-        return {};
+        mem += (it->type == 0) + 1;
+        it = (JPEGMarker*)mem;
     }
 
-    ASSERT(*mem == 0xFF);
-    u32 index = 0;
-    for(auto it = mem; it < mem + size; index++) {
+    return (JPEGMarker*)mem;
+}
+byte* PrintJPEGQT(byte* begin, byte* mem) {
+    
+    auto qt = (JPEGQuantizationTable*)mem;
+    u32 len = ReverseByteOrder(qt->len) - 2;
+    global_print("xsu", mem - begin, " Qunatization table\n len ", len);
+    for(u32 i = 0; i < len; ) {
+        auto param = (JPEGQuantizationParameter*)((byte*)qt->params) + i;
 
-        auto marker = (JFIFMarkerNopayload*)it;
-        ASSERT(marker->signature == 0xFF);
-        if(marker->type == 0xD9) {
-            break;
+        global_print("su sucus",
+            "\n  destination identifier ", (u32)param->dstIdentifier,
+            "\n  element precision ", (u32)param->elemPrecision, '(', (param->elemPrecision ? 16 : 8),
+            ")\n  values[64] "
+        );
+
+        u32 de_zig_zaged[64];
+        for(u32 k = 0; k < 64; k++) {
+            u32 zig = jpeg_de_zig_zag[k];
+            u64 q;
+            if(param->elemPrecision) {
+                q = (u32)Mem<u16>(param->Q + k*2);
+            }
+            else {
+                q = param->Q[k];
+            }
+            de_zig_zaged[zig] = q;
         }
 
-        MarkerDescriptor descriptor;
-        for(u32 i = 0; i < SIZE_OF_ARRAY(JFIFMarkers); i++) {
-            if(marker->type == JFIFMarkers[i].type) {
-                descriptor = JFIFMarkers[i];
+        for(u32 k = 0; k < 8; k++) {
+            
+            global_print("s", "\n  ");
+            for(u32 j = 0; j < 8; j++) {
+            
+                auto index = k * 8 + j;
+                global_print("uc", de_zig_zaged[index], '\t');
+            }
+        }
+        global_print("c", '\n');
+
+        u32 ad = ((u32)param->elemPrecision + 1) * 64;
+        i += ad + 1;
+    }
+    
+    return mem = ((byte*)qt->params) + len;
+}
+byte* PrintJPEGHuffmanTable(byte* begin, byte* mem) {
+
+    auto huff = (JPEGHuffmanTable*)mem;
+    u32 len = ReverseByteOrder(huff->len) - 2;
+    global_print("xsu", mem - begin, " Huffman table\n len ", len);
+
+    for(u32 i = 0; i < len;) {
+
+        auto param = (JPEGHuffmanParameter*)(((byte*)huff->params) + i);
+        u8 bb = Mem<u8>(param);
+
+        global_print("su su su s",
+            "\n  Huffman table destination identifier ", (u32)param->huffDstIdentifier,
+            "\n  table class ", (u32)param->tableClass,
+            "\n  symbol count ", len - 17,
+            "\n  lengths[16] "
+        );
+        for(u32 k = 0; k < 16; k++) {
+            
+            global_print("uc", (u32)param->L[k], ' ');
+        }
+        u32 off = 0;
+
+        for(u32 k = 0; k < 16; k++) {
+            
+            u32 l = (u32)param->L[k];
+            /*
+            if(l == 0) continue;
+            for(u32 j = 0; j < l; j++) {
+                if(j % 24 == 0) {
+                    global_print("sus", "\n  L[", k, "] ");
+                }
+                global_print("uc", (u32)param->V[off + j], ' ');
+            }
+            */
+            off += l;
+        }
+
+        i += off + sizeof(JPEGHuffmanParameter);
+    }
+    global_print("c", '\n');
+    mem = (byte*)huff->params + len;
+}
+byte* PrintJPEGTables(byte* base, byte* mem) {
+
+    for(bool run = true;run;) {
+
+        JPEGMarker* marker = GetMarker(mem);
+        ASSERT(marker->signature = 0xFF);
+        mem = (byte*)marker;
+
+        switch(marker->type) {
+        case DQT:
+            {              
+                mem = PrintJPEGQT(base, mem);
+                break;
+            }
+        case DHT:
+            {
+                mem = PrintJPEGHuffmanTable(base, mem);
+                break;
+            }
+        case DAC:
+            {
+                auto arit = (JPEGArithmeticCondTable*)marker;
+                u32 len = ReverseByteOrder(arit->len) - 2;
+                global_print("xsuc", mem - base, " Arithmetic coding condition table\n ", len);
+
+                u32 count = len / sizeof(JPEGArithmeticParameter);
+                for(u32 i = 0; i < count; i++) {
+                    
+                    global_print("sucu sucu sucu",
+                        "\n  table classe ", i, '\t', (u32)arit->params[i].tableClass,
+                        "\n  arithmetic destination identifier ", i, '\t', (u32)arit->params[i].aritDstIdentifier,
+                        "\n  conditioning table valuee ", i, '\t', (u32)arit->params[i].conditioningTableValue
+                    );
+                }
+                global_print("c", '\n');
+                mem = ((byte*)arit->params) + len;
+                break;
+            }
+        case DRI:
+            {
+                auto restart = (JPEGRestartInterval*)marker;
+                u32 len = ReverseByteOrder(restart->len) - 2;
+                global_print("xsucsuc", mem - base, " Restart interval\n ", len , "\n restart interval ", (u32)ReverseByteOrder(restart->restartInterval), '\n');
+                mem = (byte*)(restart + 1);
+                break;
+            }
+        case COM:
+            {
+                auto com = (JPEGCommentSegment*)marker;
+                u32 len = ReverseByteOrder(com->len) - 2;
+                global_print("xsuss*c", mem - base, " Comment \n ", len , "\n ", com->comment, len, '\n');
+                mem = com->comment + len;
+                break;
+            }
+        case APP0:
+            {
+                auto app = (JPEGMarkerSegment*)marker;
+                auto info = (APP0Payload*)app->payload;
+                u32 len = ReverseByteOrder(app->len) - 2;
+                global_print("xsuc", mem - base, " App \n len ", len);
+                global_print("ss", "\n identifier ", info->identifier);
+                global_print("su", "\n major ", (u32)info->major);
+                global_print("su", "\n minor ", (u32)info->minor);
+                global_print("su", "\n density unit ", (u32)info->densityUnit);
+                global_print("su", "\n density x ", (u32)ReverseByteOrder(info->xDensity));
+                global_print("su", "\n density y ", (u32)ReverseByteOrder(info->yDensity));
+                if(info->xThumbnail) {
+                    global_print("su", "\n thumbnail x ", (u32)ReverseByteOrder(info->xThumbnail));
+                    global_print("su", "\n thumbnail y ", (u32)ReverseByteOrder(info->yThumbnail));
+                }
+                global_print("c", '\n');
+
+                mem = app->payload + len;
+                break;
+            }
+        default:
+            run = false;
+            break;
+        }
+    }
+
+    global_io_flush();
+    return mem;
+}
+
+byte* PrintJPEGFrameHeader(byte* begin, byte* mem) {
+
+    JPEGFrameHeader* header = (JPEGFrameHeader*)GetMarker(mem);
+    ASSERT(header->signature = 0xFF);
+    
+    if(header->type >= SOF0 && header->type <= SOF3) {
+        const char* desc[] = {
+            "(Baseline DCT)",
+            "(Extended sequential DCT)",
+            "(Progressive DCT)",
+            "(Lossless sequential)"
+        };
+        u32 n = header->type - SOF0;
+        global_print("xsuss", mem - begin, " SOF", n, desc[n], " non-differential, Huffman coding\n");
+    }
+    else if(header->type >= SOF5 && header->type <= SOF7) {
+        const char* desc[] = {
+            "(Differential sequential DCT)",
+            "(Differential progressive DCT)",
+            "(Differential lossless sequential)",
+        };
+        u32 n = header->type - SOF5;
+        global_print("xsuss", mem - begin, " SOF", n, desc[n], " differential, Huffman coding\n");
+    }
+    else if(header->type >= SOF8 && header->type <= SOF11) {
+        const char* desc[] = {
+            "(Reserved for JPEG extensions)",
+            "(Extended sequential DCT)",
+            "(Progressive DCT)",
+            "(Lossless sequential)",
+        };
+        u32 n = header->type - SOF8;
+        global_print("xsuss", mem - begin, " SOF", n, desc[n], " non-differential, arithmetic coding\n");
+    }
+    else if(header->type >= SOF13 && header->type <= SOF15) {
+        const char* desc[] = {
+            "(Differential sequential DCT)",
+            "(Differential progressive DCT)",
+            "(Differential lossless sequential)",
+        };
+        u32 n = header->type - SOF13;
+        global_print("xsuss", mem - begin, " SOF", n, desc[n], " differential, arithmetic coding\n");
+    }
+    else {
+        ASSERT(false);
+    }
+    
+    u32 len = ReverseByteOrder(header->len) - 2;
+    u32 height = ReverseByteOrder(header->height);
+    u32 width = ReverseByteOrder(header->width);
+    u32 count = header->paramCount;
+    u32 prec = header->samplePrecision;
+    global_print("sususususu", " length ", len , "\n height ", height, "\n width ", width, "\n sameple precision ", prec, "\n parameter count ", count);
+    
+    
+    u32 maxH = 0;
+    u32 maxV = 0;
+    for(u32 i = 0; i < count; i++) {
+    	maxH = Max( (u32)header->params[i].samplingFactors.horizSamplingFactor, maxH);
+    	maxV = Max( (u32)header->params[i].samplingFactors.vertSamplingFactor, maxV);
+    }
+    for(u32 i = 0; i < count; i++) {
+    
+    	f32 samplingX = (u32)header->params[i].samplingFactors.horizSamplingFactor;
+    	f32 samplingY = (u32)header->params[i].samplingFactors.vertSamplingFactor;
+    	
+    	u32 dimX = (u32)ceil( (f32)width * (samplingX / (f32)maxH) );
+    	u32 dimY = (u32)ceil( (f32)height * (samplingY / (f32)maxV) );
+    	
+        global_print("sucu sucu sucu sucu susus",
+            "\n  component indentifier", i, '\t', (u32)header->params[i].componentIndentifier,
+            "\n  QT destination selector", i, '\t', (u32)header->params[i].QTDstSelector,
+            "\n  horizontal sampling Factor", i, '\t', (u32)header->params[i].samplingFactors.horizSamplingFactor,
+            "\n  vertical sampling Factor", i, '\t', (u32)header->params[i].samplingFactors.vertSamplingFactor,
+            "\n  component image dimensions (", dimY, " x ", dimX, ")\n"
+        );
+    }
+
+    global_io_flush();
+    return (byte*)(header->params + count);
+}
+
+byte* PrintJPEGScanHeader(byte* begin, byte* mem) {
+
+    JPEGScanHeader* header = (JPEGScanHeader*)GetMarker(mem);
+    ASSERT(header->signature == 0xFF && header->type == SOS);
+
+    u32 len = ReverseByteOrder(header->len) - 2;
+    u32 count = header->paramCount;
+    global_print("xsusu", mem - begin, " SOS\n len ", len , "\n parameter count ", count);
+    for(u32 i = 0; i < count; i++) {
+
+        global_print("susu sucu sucuc",
+            "\n  scan component selector", i, "\t\t\t", (u32)header->params[i].scanCompSelector,
+            "\n  DC entropy coding table destination selector", i, '\t', (u32)header->params[i].selectors.DCentropyCodingTableDstSelector,
+            "\n  AC entropy coding table destination selector", i, '\t', (u32)header->params[i].selectors.ACentropyCodingTableDstSelector, '\n'
+        );
+    }
+
+    auto end = (JPEGScanHeaderEnd*)(header->params + count);
+    global_print("su su su suc",
+        "\n start of spectral selection ", (u32)end->startSpectralPredictorSelection,
+        "\n end of spectral selection ", (u32)end->endSpectralSelection,
+        "\n successive approximate bit position high ", (u32)end->bitPositions.approxBitPositionHigh,
+        "\n successive approximate bit position low ", (u32)end->bitPositions.approxBitPositionLow, '\n'
+    );
+
+    global_io_flush();
+    return (byte*)(end + 1);
+}
+byte* PrintJPEGScans(byte* begin, byte* mem) {
+
+    JPEGMarker* marker;
+    do {
+
+        mem = PrintJPEGTables(begin, mem);
+        mem = PrintJPEGScanHeader(begin, mem);
+        mem = PrintJPEGTables(begin, mem);
+        marker = GetMarker(mem);
+        if(marker->type == DNL) {
+            marker++;
+            mem = (byte*)marker;
+            global_print("xs", mem - begin, " DNL\n");
+        }
+
+    } while(marker->type == SOS);
+
+    return mem;
+}
+void PrintJPEGMemory(byte* mem, u32 size) {
+    
+    const auto srcBegin = mem;
+    if(!VerifyJFIFignature(mem)) {
+        return;
+    }
+
+    mem = PrintJPEGTables(srcBegin, mem+2);
+	auto marker = GetMarker(mem);
+	if(marker->type == DHP) {
+        global_print("xs", mem - srcBegin, " DHP\n");
+	}
+
+	do {
+
+        mem = PrintJPEGTables(srcBegin, mem);
+        mem = PrintJPEGFrameHeader(srcBegin, mem);
+        mem = PrintJPEGScans(srcBegin, mem);
+
+        marker = GetMarker(mem);
+        mem = (byte*)marker;
+	} while(marker->type != EOI);
+
+
+    global_print("xs", mem - srcBegin, " EOI\n");
+    global_io_flush();
+}
+
+byte* ParseJPEGTables(JPEGTables* tables, byte* mem) {
+
+    for(bool run = true;run;) {
+
+        JPEGMarker* marker = GetMarker(mem);
+        ASSERT(marker->signature = 0xFF);
+        mem = (byte*)marker;
+
+        switch(marker->type) {
+        case DQT:
+            {
+                auto qt = (JPEGQuantizationTable*)mem;
+				u32 len = ReverseByteOrder(qt->len) - 2;
+				for(u32 i = 0; i < len; ) {
+					
+					auto param = (JPEGQuantizationParameter*)((byte*)qt->params) + i;
+					ASSERT((u32)param->dstIdentifier < 4);
+					ASSERT(param->elemPrecision < 2);
+					tables->quantizationTable[param->dstIdentifier] = param;
+			        i += ((u32)param->elemPrecision + 1) * 64 + 1;
+				}
+				
+				mem = (byte*)qt->params + len;
+                break;
+            }
+        case DHT:
+            {
+			    auto huff = (JPEGHuffmanTable*)mem;
+				u32 len = ReverseByteOrder(huff->len) - 2;
+
+				for(u32 i = 0; i < len;) {
+
+					auto param = (JPEGHuffmanParameter*)(((byte*)huff->params) + i);
+					ASSERT(param->huffDstIdentifier < 4 && param->tableClass < 2);
+                    tables->huffmanTables[param->tableClass * 4 + param->huffDstIdentifier] = param;
+
+					u32 off = 0;
+					for(u32 k = 0; k < 16; k++) {
+						off += (u32)param->L[k];
+					}
+
+					i += (off + sizeof(JPEGHuffmanParameter));;
+				}
+
+				mem = (byte*)huff->params + len;            
+                break;
+            }
+        case DAC:
+            {
+                auto arit = (JPEGArithmeticCondTable*)marker;
+                u32 len = ReverseByteOrder(arit->len) - 2;
+
+                u32 count = len / sizeof(JPEGArithmeticParameter);
+                for(u32 i = 0; i < count; i++) {
+
+                	auto param = arit->params + i;
+					
+					ASSERT(param->aritDstIdentifier < 4 && param->tableClass < 2);
+                    tables->arithmeticTables[param->tableClass * 8 + param->aritDstIdentifier] = param;
+               	}
+                mem = (byte*)arit->params + len;
+                break;
+            }
+        case DRI:
+            {
+                auto restart = (JPEGRestartInterval*)marker;
+                u32 len = ReverseByteOrder(restart->len) - 2;
+                mem = (byte*)(restart + 1);
+                break;
+            }
+        case COM:
+            {
+                auto com = (JPEGCommentSegment*)marker;
+                u32 len = ReverseByteOrder(com->len) - 2;
+                mem = com->comment + len;
+                break;
+            }
+        default:
+            run = false;
+            break;
+        }
+    }
+
+    return mem;
+}
+u32 JPEGReceive(BitStream* stream, u32 n) {
+    return ReadBitsJPEG(stream, n);
+}
+i32 JPEGExtend(i32 v, u32 t) {
+
+    i32 vt = 1 << (t - 1);
+    if(v < vt) {
+        vt = (-1 << t) + 1;
+        v += vt;
+    }
+    return v;
+}
+void DecodeJPEGACSeq(i16 block[63], BitStream* src, HuffmanDictionary* huff, u16 dequant[64]) {
+
+    memset(block+1, 0, 63 * sizeof(i16));
+    u32 k = 1;
+
+    do {
+
+        u32 rs = HuffmanDecodeJPEG(huff, src);
+
+        u32 ssss = rs & 15;
+        u32 r = rs >> 4;
+
+        if(ssss == 0) {
+            if(r != 15) {
+                break;
+            }
+            k += 16;
+        }
+        else {
+            k = k + r;
+            u32 zig = jpeg_de_zig_zag[k++];
+            i32 extend = JPEGExtend(JPEGReceive(src, ssss), ssss);
+            block[zig] = (i32)dequant[zig] * extend;
+        }
+
+    } while(k < 64);
+}
+void stbi__idct_simd(u8* out, int out_stride, short data[64]);
+
+
+i32 DecodeJPEGBlockHuffmanSeq(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, HuffmanDictionary* huffAC, u16 dequant[64], i32 pred) {
+    
+    u32 t = HuffmanDecodeJPEG(huffDC, src);
+    u32 r = JPEGReceive(src, t);
+    i32 diff = JPEGExtend(r, t);
+
+    i32 dc = pred + diff;
+    dst[0] = (i16)(dc * dequant[0]);
+
+    DecodeJPEGACSeq(dst, src, huffAC, dequant);
+
+    return dc;
+}
+i32 DecodeJPEGBlockHuffmanProgDC(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, u32 al, u32 ah, i32 pred) {
+
+    i32 dc = pred;
+    if(ah) {
+        auto bit = ReadBitsJPEG(src, 1);
+        dst[0] += bit << al;
+    }
+    else {
+        ASSERT(al != 0);
+        auto t = HuffmanDecodeJPEG(huffDC, src);
+        i32 diff = 0;
+        diff = JPEGExtend(JPEGReceive(src, t), t);
+        dc = pred + diff;
+        dst[0] = dc * (1 << al);
+    }
+
+    return dc;
+}
+i32 DecodeJPEGBlockHuffmanProgAC(i16 dst[64], BitStream* src, HuffmanDictionary* huffAC, u32 spectralStart, u32 spectralEnd, u32 al, u32 ah, i32 eobRun) {
+
+    if (ah == 0) {
+
+        auto shift = al;
+        ASSERT(!eobRun);
+
+        i32 k = al;
+        do {
+
+            int rs = HuffmanDecode(huffAC, src);
+            i32 s = rs & 15;
+            i32 r = rs >> 4;
+            
+            if (s == 0) {
+                if (r < 15) {
+                    eobRun = (1 << r);
+                    if(r) {
+                        eobRun += ReadBits(src, r);
+                    }
+
+                    eobRun--;
+                    break;
+                }
+                k += 16;
+            }
+            else {
+
+                k += r;
+                u32 zig = jpeg_de_zig_zag[k++];
+                auto extended = JPEGExtend(JPEGReceive(src, s), s);
+                dst[zig] = (i16)(extended * (1 << shift));
+            }
+
+        } while (k <= spectralEnd);
+
+    }
+    else {
+        // refinement scan for these AC coefficients
+        short bit = (short) (1 << al);
+
+        if(eobRun) {
+            eobRun--;
+            for(u32 k = spectralStart; k <= spectralEnd; k++) {
+
+                i16* it = dst + jpeg_de_zig_zag[k];
+                if(it[0] != 0) {
+
+                    if(ReadBits(src, 1)) {
+                        if( (it[0] & bit) == 0) {
+                            if (it[0] > 0) {
+                                it[0] += bit;
+                            }
+                            else {
+                                it[0] -= bit;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            
+            u32 k = spectralStart;
+            do {
+
+                i32 r,s;
+                i32 rs = HuffmanDecode(huffAC, src);
+                s = rs & 15;
+                r = rs >> 4;
+
+                if (s == 0) {
+                    if (r < 15) {
+                        eobRun = (1 << r) - 1;
+                        if (r) {
+                            eobRun += ReadBits(src, r);
+                        }
+
+                        r = 64; // force end of block
+                    }
+                    else {
+                        // r=15 s=0 should write 16 0s, so we just do
+                        // a run of 15 0s and then write s (which is 0),
+                        // so we don't have to do anything special here
+                    }
+                }
+                else {
+
+                    // sign bit
+                    if (ReadBits(src, 1)) {
+                        s = bit;
+                    }
+                    else {
+                        s = -bit;
+                    }
+                }
+
+                // advance by r
+                while(k <= spectralEnd) {
+
+                    i16* it = dst + jpeg_de_zig_zag[k++];
+                    if (*it != 0) {
+
+                        if(ReadBits(src, 1)) {
+
+                            if( (*it & bit) == 0) {
+                                if (*it > 0) {
+                                    *it += bit;
+                                }
+                                else {
+                                    *it -= bit;
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        if (r == 0) {
+                            *it = (i16)s;
+                            break;
+                        }
+                        --r;
+                    }
+                }
+            } while (k <= spectralEnd);
+        }
+    }
+
+    return eobRun;
+}
+
+byte* DecodeJPEGEntropyHuffmanProgressive(JPEGFrameInfo* frameInfo, JPEGScanInfo* scanInfo, HuffmanDictionary* huffmans, i16* result[4]) {
+
+    u32 DCpred[4]{};
+    BitStream stream{scanInfo->entropy, 0, 0,0};
+
+    auto dcHuff = huffmans + 0;
+    auto acHuff = huffmans + 4;
+    HuffmanDictionary* ac;
+    HuffmanDictionary* dc;
+    JPEGComponentInfo* compDescriptor;
+
+    if(scanInfo->compCount == 1) {
+        auto compIndex = scanInfo->comps[0].id - 1;
+        auto mcuX = (frameInfo->comps[compIndex].width  + 7) >> 3;
+        auto mcuY = (frameInfo->comps[compIndex].height + 7) >> 3;
+
+        auto compSelect = &scanInfo->comps[0];
+        compDescriptor = &frameInfo->comps[compSelect->id - 1];
+        ASSERT(compDescriptor->id == compSelect->id);
+        ac = acHuff + compSelect->entropyCodingSelectorAC;
+        dc = dcHuff + compSelect->entropyCodingSelectorDC;
+        u32 width = mcuX * compDescriptor->samplingFactorX * 8;
+        u32 height = mcuY * compDescriptor->samplingFactorY * 8;
+        u32 eobRun = 0;
+
+        for(u32 i = 0; i < frameInfo->mcuY; i++) {
+            for(u32 k = 0; k < frameInfo->mcuX; k++) {
+
+                auto dst = result[0] + 64 * (i * mcuY + k);
+                if(scanInfo->freqSpectrumBeginPredictor == 0) {
+                    ASSERT(scanInfo->freqSpectrumEnd == 0);
+                    DCpred[0] = DecodeJPEGBlockHuffmanProgDC(dst, &stream, dc, scanInfo->al, scanInfo->ah, DCpred[0]);
+                }
+                else {
+                    eobRun = DecodeJPEGBlockHuffmanProgAC(dst, &stream, dc, scanInfo->freqSpectrumBeginPredictor, scanInfo->freqSpectrumEnd, scanInfo->al, scanInfo->ah, eobRun);
+                }
+            }
+        }
+    }
+    else {
+
+        for(u32 k = 0; k < frameInfo->mcuY; k++) {
+            for(u32 i = 0; i < frameInfo->mcuX; i++) {
+
+                for(u32 j = 0; j < scanInfo->compCount; j++) {
+
+                    auto compSelect = &scanInfo->comps[j];
+                    compDescriptor = &frameInfo->comps[j];
+                    ASSERT(compDescriptor->id == compSelect->id);
+                    ac = acHuff + compSelect->entropyCodingSelectorAC;
+                    dc = dcHuff + compSelect->entropyCodingSelectorDC;
+                    u32 width = frameInfo->mcuX * compDescriptor->samplingFactorX * 8;
+                    u32 height = frameInfo->mcuY * compDescriptor->samplingFactorY * 8;
+
+                    for(u32 y = 0; y < compDescriptor->samplingFactorY; y++) {
+                        for(u32 x = 0; x < compDescriptor->samplingFactorX; x++) {
+
+                            u32 imgCoordX = (i * compDescriptor->samplingFactorX + x) * 8;
+                            u32 imgCoordY = (k * compDescriptor->samplingFactorY + y) * 8;
+                            auto dst = result[j] + imgCoordY * width + imgCoordX;
+                            DCpred[j] = DecodeJPEGBlockHuffmanProgDC(dst, &stream, dc, scanInfo->al, scanInfo->ah, DCpred[j]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+byte* DecodeJPEGEntropyHuffmanSequential(JPEGFrameInfo* frameInfo, JPEGScanInfo* scanInfo, HuffmanDictionary* huffmans, u16 QTs[4][64], u8* result[4]) {
+
+    alignas (64) i16 block[64];
+    u32 DCpred[4]{};
+    BitStream stream{scanInfo->entropy, 0, 0,0};
+
+    auto dcHuff = huffmans + 0;
+    auto acHuff = huffmans + 4;
+    HuffmanDictionary* ac;
+    HuffmanDictionary* dc;
+    JPEGComponentInfo* compDescriptor;
+
+    u32 mcuY = frameInfo->mcuY;
+    u32 mcuX = frameInfo->mcuX;
+    if(scanInfo->compCount == 1) {
+        auto compIndex = scanInfo->comps[0].id - 1;
+        mcuX = (frameInfo->comps[compIndex].width  + 7) >> 3;
+        mcuY = (frameInfo->comps[compIndex].height + 7) >> 3;
+    }
+
+    for(u32 k = 0; k < mcuY; k++) {
+        for(u32 i = 0; i < mcuX; i++) {
+
+            for(u32 j = 0; j < scanInfo->compCount; j++) {
+                
+                auto compSelect = &scanInfo->comps[j];
+                compDescriptor = &frameInfo->comps[compSelect->id - 1];
+                ASSERT(compDescriptor->id == compSelect->id);
+                ac = acHuff + compSelect->entropyCodingSelectorAC;
+                dc = dcHuff + compSelect->entropyCodingSelectorDC;
+                u32 width = frameInfo->mcuX * compDescriptor->samplingFactorX * 8;
+                u32 height = frameInfo->mcuY * compDescriptor->samplingFactorY * 8;
+
+                u32 samplingFactorX = scanInfo->compCount == 1 ? 1 : compDescriptor->samplingFactorX;
+                u32 samplingFactorY = scanInfo->compCount == 1 ? 1 : compDescriptor->samplingFactorY;
+                
+                for(u32 y = 0; y < samplingFactorY; y++) {
+                    for(u32 x = 0; x < samplingFactorX; x++) {
+
+                        u32 imgCoordX = (i * compDescriptor->samplingFactorX + x) * 8;
+                        u32 imgCoordY = (k * compDescriptor->samplingFactorY + y) * 8;
+                        DCpred[j] = DecodeJPEGBlockHuffmanSeq(block, &stream, dc, ac, QTs[compDescriptor->QTDstSelector], DCpred[j]);
+                        //JPEGInverseDCT8x8(result[j] + width * imgCoordY + imgCoordX, block, width);
+                        //stbi__idct_block(result[j] + width * imgCoordY + imgCoordX, width, block);
+                        stbi__idct_simd(result[j] + width * imgCoordY + imgCoordX, width, block);
+                    }
+                }
+            }
+        }
+    }
+
+    return stream.bytePtr;
+}
+byte* ParseJPEGScan(JPEGScanInfo* info, byte* mem, LinearAllocator* alloc) {
+
+    mem = ParseJPEGTables(&info->tables, mem);
+    auto marker = GetMarker(mem);
+
+    JPEGScanHeader* header = (JPEGScanHeader*)GetMarker(mem);
+    ASSERT(header->signature == 0xFF && header->type == SOS);
+
+    u32 len = ReverseByteOrder(header->len) - 2;
+    info->compCount = header->paramCount;
+    for(u32 i = 0; i < info->compCount; i++) {
+
+        info->comps[i].id = header->params[i].scanCompSelector;
+        info->comps[i].entropyCodingSelectorDC = header->params[i].selectors.DCentropyCodingTableDstSelector;
+        info->comps[i].entropyCodingSelectorAC = header->params[i].selectors.ACentropyCodingTableDstSelector;
+    }
+
+    auto end = (JPEGScanHeaderEnd*)(header->params + info->compCount);
+    info->entropy = (byte*)(end + 1);
+    
+    info->al = end->bitPositions.approxBitPositionLow;
+    info->ah = end->bitPositions.approxBitPositionHigh;
+    info->freqSpectrumBeginPredictor = end->startSpectralPredictorSelection;
+    info->freqSpectrumEnd = end->endSpectralSelection;
+  
+    return info->entropy;
+}
+bool MatchMarker(JPEGMarker* marker, MarkerType* t, u32 count) {
+
+    for(u32 i = 0; i < count; i++) {
+
+        if (marker->type == t[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+byte* ParseJPEGFrame(JPEGFrameInfo* info, byte* mem, u32 size, LinearAllocator* alloc) {
+
+    JPEGTables tables{};
+	mem = ParseJPEGTables(&tables, mem);
+
+	auto marker = GetMarker(mem);
+    info->hiearachical = false;
+	if(marker->type == DHP) {
+		info->hiearachical = true;
+	}
+
+    JPEGFrameHeader* header = (JPEGFrameHeader*)GetMarker(mem);
+    ASSERT(header->signature = 0xFF);
+    info->segment = header;
+
+    
+    if(header->type >= SOF0 && header->type <= SOF3) {
+        JPEGMode modes[] = {
+            JPEG_BASELINE_SEQUINTAL_DCT,
+            JPEG_EXTENDEND_SEQUINTAL_DCT,
+            JPEG_PROGRESSIVE_DCT,
+            JPEG_LOSSLESS,
+        };
+        info->mode = modes[header->type - SOF0];
+    }
+    else if(header->type >= SOF5 && header->type <= SOF7) {
+        header->type - SOF5;
+    }
+    else if(header->type >= SOF8 && header->type <= SOF11) {
+        header->type - SOF8;
+    }
+    else if(header->type >= SOF13 && header->type <= SOF15) {
+        header->type - SOF13;
+    }
+    else {
+        ASSERT(false);
+    }
+    
+    u32 len = ReverseByteOrder(header->len) - 2;
+    info->height = ReverseByteOrder(header->height);
+    info->width = ReverseByteOrder(header->width);
+    u32 count = header->paramCount;
+    info->samplePrecision = header->samplePrecision;
+    
+    u32 maxH = 0;
+    u32 maxV = 0;
+    for(u32 i = 0; i < count; i++) {
+    	maxH = Max( (u32)header->params[i].samplingFactors.horizSamplingFactor, maxH);
+    	maxV = Max( (u32)header->params[i].samplingFactors.vertSamplingFactor, maxV);
+    }
+    for(u32 i = 0; i < count; i++) {
+
+        info->comps[i].id = header->params[i].componentIndentifier;
+        info->comps[i].QTDstSelector = header->params[i].QTDstSelector;
+        info->comps[i].samplingFactorX = header->params[i].samplingFactors.horizSamplingFactor;
+        info->comps[i].samplingFactorY = header->params[i].samplingFactors.vertSamplingFactor;
+    
+    	f32 samplingX = (u32)header->params[i].samplingFactors.horizSamplingFactor;
+    	f32 samplingY = (u32)header->params[i].samplingFactors.vertSamplingFactor;
+    	
+    	u32 dimX = (u32)ceil( (f32)info->width * (samplingX / (f32)maxH) );
+    	u32 dimY = (u32)ceil( (f32)info->height * (samplingY / (f32)maxV) );
+        info->comps[i].width = dimX;
+        info->comps[i].height = dimY;
+    }
+
+    info->mcuX = (info->width + (maxV * 8) - 1) / (maxV * 8);
+    info->mcuY = (info->height + (maxH * 8) - 1) / (maxH * 8);
+    mem = (byte*)(header->params + count);
+   
+    info->scanCount = 0;
+    LocalList<JPEGScanInfo> dummy;
+    dummy.item.tables = tables;
+    LocalList<JPEGScanInfo>* scans = &dummy;
+
+    MarkerType types[] = {DQT,DHT,DAC,DRI,COM,SOS};
+    do {
+
+        LocalList<JPEGScanInfo>* tmp;
+        ALLOCATE_LOCAL_LIST(tmp);
+        tmp->next = scans;
+        tmp->item.tables = scans->item.tables;
+        scans = tmp;
+        info->scanCount++;
+
+        mem = ParseJPEGScan(&scans->item, mem, alloc);
+        // entropy data
+        marker = GetMarker(mem);
+        if(marker->type == DNL) {
+            marker++;
+            mem = (byte*)marker;
+            ASSERT(false);
+        }
+
+	} while(MatchMarker(marker, types, SIZE_OF_ARRAY(types)));
+
+    info->scans = (JPEGScanInfo*)linear_allocate(alloc, info->scanCount * sizeof(JPEGScanInfo));
+    for(u32 i = 0; i < info->scanCount && scans; i++) {
+        info->scans[info->scanCount - (i+1)] = scans->item;
+        scans = scans->next;
+    }
+
+	return (byte*)marker;
+}
+JPEGInfo ParseJPEGMemory(byte* mem, u32 size, LinearAllocator* alloc) {
+
+    const auto srcBegin = mem;
+    APP0Payload* header;
+    if(!(header = VerifyJFIFignature(mem))) {
+        return {};
+    }
+    auto seg = (JPEGMarkerSegment*)(mem + 2);
+    mem = seg->payload + (ReverseByteOrder(seg->len) - 2);
+
+	JPEGInfo info{};
+    info.src = srcBegin;
+
+    LocalList<JPEGFrameInfo>* frames = nullptr;
+
+	do {
+
+        LocalList<JPEGFrameInfo>* tmp;
+        ALLOCATE_LOCAL_LIST(tmp);
+        tmp->next = frames;
+        frames = tmp;
+        info.frameCount++;
+
+        mem = ParseJPEGFrame(&tmp->item, mem, size, alloc);
+	} while(GetMarker(mem)->type != EOI);
+
+    info.frames = (JPEGFrameInfo*)linear_allocate(alloc, info.frameCount * sizeof(JPEGFrameInfo));
+    for(u32 i = 0; i < info.frameCount && frames; i++) {
+        info.frames[info.frameCount - (i+1)] = frames->item;
+        frames = frames->next;
+    }
+
+    return info;
+}
+
+
+#define stbi__float2fixed(x)  (((int) ((x) * 4096.0f + 0.5f)) << 8)
+u8 Sample2x2(u8* src, f32 u, f32 v, u32 stride, u32 w, u32 h) {
+
+    f32 floorU = Max((f32)0, floor(u));
+    f32 floorV = Max((f32)0, floor(v));
+
+    f32 ceilU = Min((f32)w, ceil(u));
+    f32 ceilV = Min((f32)h, ceil(v));
+
+    u32 i0 = (floorV * (f32)stride) + floorU;
+    u32 i1 = (ceilV * (f32)stride) + floorU;
+
+    u32 i2 = (floorV * (f32)stride) + ceilU;
+    u32 i3 = (ceilV * (f32)stride) + ceilU;
+
+    auto weightX = u - floorU;
+    auto weightY = v - floorV;
+
+    f32 s0 = (1.f - weightX) * (f32)src[i0] + weightX * (f32)src[i1];
+    f32 s1 = (1.f - weightX) * (f32)src[i2] + weightX * (f32)src[i3];
+
+    return u8((1.f - weightY) * s0 + weightY * s1);
+}
+void JPEGResample2(JPEGFrameInfo* info, u8* dst, u8* Y, u8* Cb, u8* Cr) {
+
+    Timer<micro_second_t> t;
+    auto YsampleWidth = info->mcuX * info->comps[0].samplingFactorX * 8;
+    auto CBsampleWidth = info->mcuX * info->comps[1].samplingFactorX * 8;
+    auto CRsampleWidth = info->mcuX * info->comps[2].samplingFactorX * 8;
+
+    auto maxH = Max(Max(info->comps[0].samplingFactorY, info->comps[1].samplingFactorY), info->comps[2].samplingFactorY);
+    auto maxV = Max(Max(info->comps[0].samplingFactorX, info->comps[1].samplingFactorX), info->comps[2].samplingFactorX);
+
+    f32 scaleX0 = (f32)maxH / (f32)info->comps[0].samplingFactorX;
+    f32 scaleY0 = (f32)maxV / (f32)info->comps[0].samplingFactorY;
+
+    f32 scaleX1 = (f32)maxH / (f32)info->comps[1].samplingFactorX;
+    f32 scaleY1 = (f32)maxV / (f32)info->comps[1].samplingFactorY;
+
+    f32 scaleX2 = (f32)maxH / (f32)info->comps[2].samplingFactorX;
+    f32 scaleY2 = (f32)maxV / (f32)info->comps[2].samplingFactorY;
+
+    auto maxIndex0 = YsampleWidth * info->comps[0].height + 1;
+    auto maxIndex1 = CBsampleWidth * info->comps[1].height + 1;
+    auto maxIndex2 = CRsampleWidth * info->comps[2].height + 1;
+
+    for(u32 i = 0; i < info->height; i++) {
+        for(u32 k = 0; k < info->width; k++) {
+
+            auto x0 = (f32)k / scaleX0;
+            auto y0 = (f32)i / scaleY0;
+
+            auto x1 = (f32)k / scaleX1;
+            auto y1 = (f32)i / scaleY1;
+
+            auto x2 = (f32)k / scaleX2;
+            auto y2 = (f32)i / scaleY2;
+
+            u32 coordLin0 = (u32)y0 * YsampleWidth  + (u32)x0;
+            u32 coordLin1 = (u32)y1 * CBsampleWidth + (u32)x1;
+            u32 coordLin2 = (u32)y2 * CRsampleWidth + (u32)x2;
+
+            u32 index0 = coordLin0;
+            u32 index1 = coordLin1;
+            u32 index2 = coordLin2;
+
+            auto y = (i32)Y[index0];
+            auto cb = (i32)Cb[index1] - 128;
+            auto cr = (i32)Cr[index2] - 128;
+
+            i32 r,g,b;
+            int y_fixed = (y << 20) + (1<<19); // rounding
+            r = y_fixed +  cr* stbi__float2fixed(1.40200f);
+            g = y_fixed + (cr*-stbi__float2fixed(0.71414f)) + ((cb*-stbi__float2fixed(0.34414f)) & 0xffff0000);
+            b = y_fixed                                     +   cb* stbi__float2fixed(1.77200f);
+            r >>= 20;
+            g >>= 20;
+            b >>= 20;
+            if ((unsigned) r > 255) { if (r < 0) r = 0; else r = 255; }
+            if ((unsigned) g > 255) { if (g < 0) g = 0; else g = 255; }
+            if ((unsigned) b > 255) { if (b < 0) b = 0; else b = 255; }
+
+            dst[0] = (u8)r;
+            dst[1] = (u8)g;
+            dst[2] = (u8)b;
+            dst[3] = 255;
+            dst += 4;
+        }
+    }
+}
+void JPEGResampleSIMD(JPEGFrameInfo* info, u8* dst, u8* Y, u8* Cb, u8* Cr) {
+
+    Timer<micro_second_t> t;
+    auto YsampleWidth = info->mcuX * info->comps[0].samplingFactorX * 8;
+    auto CBsampleWidth = info->mcuX * info->comps[1].samplingFactorX * 8;
+    auto CRsampleWidth = info->mcuX * info->comps[2].samplingFactorX * 8;
+
+    auto maxH = Max(Max(info->comps[0].samplingFactorY, info->comps[1].samplingFactorY), info->comps[2].samplingFactorY);
+    auto maxV = Max(Max(info->comps[0].samplingFactorX, info->comps[1].samplingFactorX), info->comps[2].samplingFactorX);
+
+    u32 stepX0 = (info->comps[0].samplingFactorX << 4) / maxH;
+    u32 stepY0 = (info->comps[0].samplingFactorY << 4) / maxV;
+
+    u32 stepX1 = (info->comps[1].samplingFactorX << 4) / maxH;
+    u32 stepY1 = (info->comps[1].samplingFactorY << 4) / maxV;
+
+    u32 stepX2 = (info->comps[2].samplingFactorX << 4) / maxH;
+    u32 stepY2 = (info->comps[2].samplingFactorY << 4) / maxV;
+
+    u32 index0_0 = 0;
+    u32 index0_1 = 0;
+    u32 index0_2 = 0;
+    u32 index0_3 = 0;
+
+    u32 index1_0 = 0;
+    u32 index1_1 = 0;
+    u32 index1_2 = 0;
+    u32 index1_3 = 0;
+
+    u32 index2_0 = 0;
+    u32 index2_1 = 0;
+    u32 index2_2 = 0;
+    u32 index2_3 = 0;
+
+    u32 y0_0 = 0;
+    u32 y0_1 = 0;
+    u32 y0_2 = 0;
+    u32 y0_3 = 0;
+
+    u32 y1_0 = 0;
+    u32 y1_1 = 0;
+    u32 y1_2 = 0;
+    u32 y1_3 = 0;
+
+    u32 y2_0 = 0;
+    u32 y2_1 = 0;
+    u32 y2_2 = 0;
+    u32 y2_3 = 0;
+
+    u32 x0_0 = stepX0 * 0;
+    u32 x0_1 = stepX0 * 1;
+    u32 x0_2 = stepX0 * 2;
+    u32 x0_3 = stepX0 * 3;
+
+    u32 x1_0 = stepX1 * 0;
+    u32 x1_1 = stepX1 * 1;
+    u32 x1_2 = stepX1 * 2;
+    u32 x1_3 = stepX1 * 3;
+    
+    u32 x2_0 = stepX2 * 0;
+    u32 x2_1 = stepX2 * 1;
+    u32 x2_2 = stepX2 * 2;
+    u32 x2_3 = stepX2 * 3;
+    
+    for(u32 i = 0, k = 3; i < (info->height * info->width) / 4; i++) {
+
+        auto l0 = (i32)Y[index0_0 + (x0_0 >> 4)];
+        auto l1 = (i32)Y[index0_1 + (x0_1 >> 4)];
+        auto l2 = (i32)Y[index0_2 + (x0_2 >> 4)];
+        auto l3 = (i32)Y[index0_3 + (x0_3 >> 4)];
+
+        auto cb0 = (i32)Cb[index1_0 + (x1_0 >> 4)] - 128;
+        auto cb1 = (i32)Cb[index1_1 + (x1_1 >> 4)] - 128;
+        auto cb2 = (i32)Cb[index1_2 + (x1_2 >> 4)] - 128;
+        auto cb3 = (i32)Cb[index1_3 + (x1_3 >> 4)] - 128;
+
+        auto cr0 = (i32)Cr[index2_0 + (x2_0 >> 4)] - 128;
+        auto cr1 = (i32)Cr[index2_1 + (x2_1 >> 4)] - 128;
+        auto cr2 = (i32)Cr[index2_2 + (x2_2 >> 4)] - 128;
+        auto cr3 = (i32)Cr[index2_3 + (x2_3 >> 4)] - 128;
+
+        i32 r0,g0,b0;
+        i32 r1,g1,b1;
+        i32 r2,g2,b2;
+        i32 r3,g3,b3;
+
+        int y_fixed0 = (l0 << 20) + (1<<19); // rounding
+        int y_fixed1 = (l1 << 20) + (1<<19);
+        int y_fixed2 = (l2 << 20) + (1<<19);
+        int y_fixed3 = (l3 << 20) + (1<<19);
+
+        r0 = y_fixed0 +  cr0 * stbi__float2fixed(1.40200f);
+        r1 = y_fixed1 +  cr1 * stbi__float2fixed(1.40200f);
+        r2 = y_fixed2 +  cr2 * stbi__float2fixed(1.40200f);
+        r3 = y_fixed3 +  cr3 * stbi__float2fixed(1.40200f);
+
+        g0 = y_fixed0 + (cr0* -stbi__float2fixed(0.71414f)) + ((cb0 * -stbi__float2fixed(0.34414f)) & 0xffff0000);
+        g1 = y_fixed1 + (cr1* -stbi__float2fixed(0.71414f)) + ((cb1 * -stbi__float2fixed(0.34414f)) & 0xffff0000);
+        g2 = y_fixed2 + (cr2* -stbi__float2fixed(0.71414f)) + ((cb2 * -stbi__float2fixed(0.34414f)) & 0xffff0000);
+        g3 = y_fixed3 + (cr3* -stbi__float2fixed(0.71414f)) + ((cb3 * -stbi__float2fixed(0.34414f)) & 0xffff0000);
+
+        b0 = y_fixed0 + cb0 * stbi__float2fixed(1.77200f);
+        b1 = y_fixed1 + cb1 * stbi__float2fixed(1.77200f);
+        b2 = y_fixed2 + cb2 * stbi__float2fixed(1.77200f);
+        b3 = y_fixed3 + cb3 * stbi__float2fixed(1.77200f);
+
+        r0 >>= 20;
+        r1 >>= 20;
+        r2 >>= 20;
+        r3 >>= 20;
+
+        g0 >>= 20;
+        g1 >>= 20;
+        g2 >>= 20;
+        g3 >>= 20;
+
+        b0 >>= 20;
+        b1 >>= 20;
+        b2 >>= 20;
+        b3 >>= 20;
+
+        
+        if ((unsigned) r0 > 255) { if (r0 < 0) r0 = 0; else r0 = 255; }
+        if ((unsigned) r1 > 255) { if (r1 < 0) r1 = 0; else r1 = 255; }
+        if ((unsigned) r2 > 255) { if (r2 < 0) r2 = 0; else r2 = 255; }
+        if ((unsigned) r3 > 255) { if (r3 < 0) r3 = 0; else r3 = 255; }
+
+        if ((unsigned) g0 > 255) { if (g0 < 0) g0 = 0; else g0 = 255; }
+        if ((unsigned) g1 > 255) { if (g1 < 0) g1 = 0; else g1 = 255; }
+        if ((unsigned) g2 > 255) { if (g2 < 0) g2 = 0; else g2 = 255; }
+        if ((unsigned) g3 > 255) { if (g3 < 0) g3 = 0; else g3 = 255; }
+
+        if ((unsigned) b0 > 255) { if (b0 < 0) b0 = 0; else b0 = 255; }
+        if ((unsigned) b1 > 255) { if (b1 < 0) b1 = 0; else b1 = 255; }
+        if ((unsigned) b2 > 255) { if (b2 < 0) b2 = 0; else b2 = 255; }
+        if ((unsigned) b3 > 255) { if (b3 < 0) b3 = 0; else b3 = 255; }
+
+        dst[0 ] = (u8)r0;
+        dst[1 ] = (u8)g0;
+        dst[2 ] = (u8)b0;
+        dst[3 ] = 255;
+
+        dst[4 ] = (u8)r1;
+        dst[5 ] = (u8)g1;
+        dst[6 ] = (u8)b1;
+        dst[7 ] = 255;
+
+        dst[8 ] = (u8)r2;
+        dst[9 ] = (u8)g2;
+        dst[10] = (u8)b2;
+        dst[11] = 255;
+
+        dst[12] = (u8)r3;
+        dst[13] = (u8)g3;
+        dst[14] = (u8)b3;
+        dst[15] = 255;
+
+        dst += 16;
+
+        x0_0 += stepX0 * 4;
+        x0_1 += stepX0 * 4;
+        x0_2 += stepX0 * 4;
+        x0_3 += stepX0 * 4;
+
+        x1_0 += stepX1 * 4;
+        x1_1 += stepX1 * 4;
+        x1_2 += stepX1 * 4;
+        x1_3 += stepX1 * 4;
+        
+        x2_0 += stepX2 * 4;
+        x2_1 += stepX2 * 4;
+        x2_2 += stepX2 * 4;
+        x2_3 += stepX2 * 4;
+
+        k += 4;
+        if( k >= info->width) {
+
+            u32 t = k - info->width;
+            k = (t > 2) ? t : k;
+
+            u32 lane0Mask0 = 0 - (x0_0 >= (info->comps[0].width << 4));
+            u32 lane1Mask0 = 0 - (x0_1 >= (info->comps[0].width << 4));
+            u32 lane2Mask0 = 0 - (x0_2 >= (info->comps[0].width << 4));
+            u32 lane3Mask0 = 0 - (x0_3 >= (info->comps[0].width << 4));
+
+            u32 lane0Mask1 = 0 - (x1_0 >= (info->comps[0].width << 3));
+            u32 lane1Mask1 = 0 - (x1_1 >= (info->comps[0].width << 3));
+            u32 lane2Mask1 = 0 - (x1_2 >= (info->comps[0].width << 3));
+            u32 lane3Mask1 = 0 - (x1_3 >= (info->comps[0].width << 3));
+
+            y0_0 += (stepY0 & lane0Mask0);
+            y0_1 += (stepY0 & lane1Mask0);
+            y0_2 += (stepY0 & lane2Mask0);
+            y0_3 += (stepY0 & lane3Mask0);
+
+            y1_0 += (stepY1 & lane0Mask1);
+            y1_1 += (stepY1 & lane1Mask1);
+            y1_2 += (stepY1 & lane2Mask1);
+            y1_3 += (stepY1 & lane3Mask1);
+
+            y2_0 += (stepY2 & lane0Mask1);
+            y2_1 += (stepY2 & lane1Mask1);
+            y2_2 += (stepY2 & lane2Mask1);
+            y2_3 += (stepY2 & lane3Mask1);
+
+            x0_0 -= (info->comps[0].width << 4) & lane0Mask0;
+            x0_1 -= (info->comps[0].width << 4) & lane1Mask0;
+            x0_2 -= (info->comps[0].width << 4) & lane2Mask0;
+            x0_3 -= (info->comps[0].width << 4) & lane3Mask0;
+
+            x1_0 -= (info->comps[0].width << 3) & lane0Mask1;
+            x1_1 -= (info->comps[0].width << 3) & lane1Mask1;
+            x1_2 -= (info->comps[0].width << 3) & lane2Mask1;
+            x1_3 -= (info->comps[0].width << 3) & lane3Mask1;
+
+            x2_0 -= (info->comps[0].width << 3) & lane0Mask1;
+            x2_1 -= (info->comps[0].width << 3) & lane1Mask1;
+            x2_2 -= (info->comps[0].width << 3) & lane2Mask1;
+            x2_3 -= (info->comps[0].width << 3) & lane3Mask1;
+
+            index0_0 = (y0_0 >> 4) * YsampleWidth;
+            index0_1 = (y0_1 >> 4) * YsampleWidth;
+            index0_2 = (y0_2 >> 4) * YsampleWidth;
+            index0_3 = (y0_3 >> 4) * YsampleWidth;
+
+            index1_0 = (y1_0 >> 4) * CBsampleWidth;
+            index1_1 = (y1_1 >> 4) * CBsampleWidth;
+            index1_2 = (y1_2 >> 4) * CBsampleWidth;
+            index1_3 = (y1_3 >> 4) * CBsampleWidth;
+
+            index2_0 = (y2_0 >> 4) * CRsampleWidth;
+            index2_1 = (y2_1 >> 4) * CRsampleWidth;
+            index2_2 = (y2_2 >> 4) * CRsampleWidth;
+            index2_3 = (y2_3 >> 4) * CRsampleWidth;
+
+        }
+    }
+}
+void JPEGResampleUnrolled(JPEGFrameInfo* info, u8* dst, u8* Y, u8* Cb, u8* Cr) {
+
+    Timer<micro_second_t> t;
+    auto YsampleWidth = info->mcuX * info->comps[0].samplingFactorX * 8;
+    auto CBsampleWidth = info->mcuX * info->comps[1].samplingFactorX * 8;
+    auto CRsampleWidth = info->mcuX * info->comps[2].samplingFactorX * 8;
+
+    auto maxH = Max(Max(info->comps[0].samplingFactorY, info->comps[1].samplingFactorY), info->comps[2].samplingFactorY);
+    auto maxV = Max(Max(info->comps[0].samplingFactorX, info->comps[1].samplingFactorX), info->comps[2].samplingFactorX);
+
+    u32 stepX0 = (info->comps[0].samplingFactorX << 4) / maxH;
+    u32 stepY0 = (info->comps[0].samplingFactorY << 4) / maxV;
+
+    u32 stepX1 = (info->comps[1].samplingFactorX << 4) / maxH;
+    u32 stepY1 = (info->comps[1].samplingFactorY << 4) / maxV;
+
+    u32 stepX2 = (info->comps[2].samplingFactorX << 4) / maxH;
+    u32 stepY2 = (info->comps[2].samplingFactorY << 4) / maxV;
+
+    u32 y0 = 0;
+    u32 y1 = 0;
+    u32 y2 = 0;
+
+    u32 x0 = 0;
+    u32 x1 = 0;
+    u32 x2 = 0;
+
+    u32 index0 = 0;
+    u32 index1 = 0;
+    u32 index2 = 0;
+
+    for(u32 i = 0, k = 0; i < info->height * info->width; i++,k++) {
+
+        auto y = (i32)Y[index0 + (x0 >> 4)];
+        auto cb = (i32)Cb[index1 + (x1 >> 4)] - 128;
+        auto cr = (i32)Cr[index2 + (x2 >> 4)] - 128;
+
+        i32 r,g,b;
+        int y_fixed = (y << 20) + (1<<19); // rounding
+        r = y_fixed +  cr* stbi__float2fixed(1.40200f);
+        g = y_fixed + (cr*-stbi__float2fixed(0.71414f)) + ((cb*-stbi__float2fixed(0.34414f)) & 0xffff0000);
+        b = y_fixed                                     +   cb* stbi__float2fixed(1.77200f);
+        r >>= 20;
+        g >>= 20;
+        b >>= 20;
+
+        if ((unsigned) r > 255) { if (r < 0) r = 0; else r = 255; }
+        if ((unsigned) g > 255) { if (g < 0) g = 0; else g = 255; }
+        if ((unsigned) b > 255) { if (b < 0) b = 0; else b = 255; }
+
+        dst[0] = (u8)r;
+        dst[1] = (u8)g;
+        dst[2] = (u8)b;
+        dst[3] = 255;
+        dst += 4;
+
+        x0 += stepX0;
+        x1 += stepX1;
+        x2 += stepX2;
+
+        if(k == info->width) {
+            k = 0;
+            y0 += stepY0;
+            y1 += stepY1;
+            y2 += stepY2;
+            index0 = (y0 >> 4) * YsampleWidth;
+            index1 = (y1 >> 4) * CBsampleWidth;
+            index2 = (y2 >> 4) * CRsampleWidth;
+
+            x0 = 0;
+            x1 = 0;
+            x2 = 0;
+        }
+    }
+}
+void JPEGResample(JPEGFrameInfo* info, u8* dst, u8* Y, u8* Cb, u8* Cr) {
+
+    Timer<micro_second_t> t;
+    auto YsampleWidth = info->mcuX * info->comps[0].samplingFactorX * 8;
+    auto CBsampleWidth = info->mcuX * info->comps[1].samplingFactorX * 8;
+    auto CRsampleWidth = info->mcuX * info->comps[2].samplingFactorX * 8;
+
+    auto maxH = Max(Max(info->comps[0].samplingFactorY, info->comps[1].samplingFactorY), info->comps[2].samplingFactorY);
+    auto maxV = Max(Max(info->comps[0].samplingFactorX, info->comps[1].samplingFactorX), info->comps[2].samplingFactorX);
+
+    u32 stepX0 = (info->comps[0].samplingFactorX << 4) / maxH;
+    u32 stepY0 = (info->comps[0].samplingFactorY << 4) / maxV;
+
+    u32 stepX1 = (info->comps[1].samplingFactorX << 4) / maxH;
+    u32 stepY1 = (info->comps[1].samplingFactorY << 4) / maxV;
+
+    u32 stepX2 = (info->comps[2].samplingFactorX << 4) / maxH;
+    u32 stepY2 = (info->comps[2].samplingFactorY << 4) / maxV;
+
+    u32 y0 = 0;
+    u32 y1 = 0;
+    u32 y2 = 0;
+
+    for(u32 i = 0; i < info->height; i++) {
+
+        u32 index0 = (y0 >> 4) * YsampleWidth;
+        u32 index1 = (y1 >> 4) * CBsampleWidth;
+        u32 index2 = (y2 >> 4) * CRsampleWidth;
+
+        u32 x0 = 0;
+        u32 x1 = 0;
+        u32 x2 = 0;
+        for(u32 k = 0; k < info->width; k++) {
+
+            auto y = (i32)Y[index0 + (x0 >> 4)];
+            auto cb = (i32)Cb[index1 + (x1 >> 4)] - 128;
+            auto cr = (i32)Cr[index2 + (x2 >> 4)] - 128;
+
+            i32 r,g,b;
+            int y_fixed = (y << 20) + (1<<19); // rounding
+            r = y_fixed +  cr* stbi__float2fixed(1.40200f);
+            g = y_fixed + (cr*-stbi__float2fixed(0.71414f)) + ((cb*-stbi__float2fixed(0.34414f)) & 0xffff0000);
+            b = y_fixed                                     +   cb* stbi__float2fixed(1.77200f);
+            r >>= 20;
+            g >>= 20;
+            b >>= 20;
+
+            if ((unsigned) r > 255) { if (r < 0) r = 0; else r = 255; }
+            if ((unsigned) g > 255) { if (g < 0) g = 0; else g = 255; }
+            if ((unsigned) b > 255) { if (b < 0) b = 0; else b = 255; }
+
+            dst[0] = (u8)r;
+            dst[1] = (u8)g;
+            dst[2] = (u8)b;
+            dst[3] = 255;
+            dst += 4;
+
+            x0 += stepX0;
+            x1 += stepX1;
+            x2 += stepX2;
+        }
+
+        y0 += stepY0;
+        y1 += stepY1;
+        y2 += stepY2;
+    }
+}
+
+u32 MaxMemoryRequiredJPEG(byte* mem) {
+
+    for(auto marker = (JPEGMarker*)mem;; marker = GetMarker(mem)) {
+
+        auto sof0 = (marker->type - SOF0) < 4;
+        auto sof1 = (marker->type - SOF5) < 3;
+        auto sof2 = (marker->type - SOF8) < 4;
+        auto sof3 = (marker->type - SOF13) < 3;
+
+        if(sof0 || sof1 || sof2 || sof3) {
+            auto header = (JPEGFrameHeader*)marker;
+
+            auto bits = header->samplePrecision / 8;
+            auto w = ReverseByteOrder(header->width);
+            auto h = ReverseByteOrder(header->height);
+
+            u32 maxH = 0;
+            u32 maxV = 0;
+            for(u32 k = 0; k < header->paramCount; k++) {
+
+                maxH = Max(maxH, (u32)header->params[k].samplingFactors.horizSamplingFactor);
+                maxV = Max(maxV, (u32)header->params[k].samplingFactors.vertSamplingFactor);
+            }
+            auto mcuX = (w + (maxV * 8) - 1) / (maxV * 8);
+            auto mcuY = (h + (maxH * 8) - 1) / (maxH * 8);
+            
+            u32 size = 0;
+            for(u32 k = 0; k < header->paramCount; k++) {
+
+                auto bits = header->samplePrecision >> 3;
+                auto sampleWidth = mcuX * (u32)header->params[k].samplingFactors.horizSamplingFactor * 8;
+                auto sampleHeight = mcuY * (u32)header->params[k].samplingFactors.vertSamplingFactor * 8;
+                size += sampleWidth * sampleHeight * bits;
+            }
+
+            return size + w * h * 4;
+        }
+
+        mem = (byte*)(marker+1);
+    }
+
+    return ~u32(0);
+}
+
+
+ImageDescriptor LoadJPEG(byte* mem, u32 size, LinearAllocator* alloc) {
+
+    alignas(64) i16 block[64];
+    byte localMem[KILO_BYTE * 2];
+    auto parserAlloc = make_linear_allocator(localMem, KILO_BYTE * 128);
+    auto info = ParseJPEGMemory(mem, size, &parserAlloc);
+
+    ImageDescriptor ret;
+    ret.width = info.frames[0].width;
+    ret.height = info.frames[0].height;
+    auto imgSize = ret.width * ret.height * 4;
+    u8* completeImg = (u8*)linear_allocate(alloc, imgSize);
+    ret.img = (Pixel*)completeImg;
+    const auto top0 = alloc->top;
+
+    HuffmanDictionary huffs[8];
+    for(u32 i = 0; i < 8; i++) {
+        huffs[i] = AllocateHuffmanDict(alloc, 16);
+    }
+
+    u16 QTs[4][64];
+    u8* imageComps[4];
+
+    for(u32 i = 0; i < info.frameCount; i++) {
+
+        const auto top = alloc->top;
+        for(u32 k = 0; k < info.frames[i].segment->paramCount; k++) {
+
+            ASSERT(info.frames[i].samplePrecision == 8);
+            auto bits = info.frames[i].samplePrecision / 8;
+            u32 sampleWidth = 0;
+            u32 sampleHeight = 0;
+
+            switch(info.frames[i].mode) {
+            case JPEG_BASELINE_SEQUINTAL_DCT:
+                sampleWidth = info.frames[i].mcuX * info.frames[i].comps[k].samplingFactorX * 8;
+                sampleHeight = info.frames[i].mcuY * info.frames[i].comps[k].samplingFactorY * 8;
+                break;
+            case JPEG_PROGRESSIVE_DCT:
+                bits = 16;
+                sampleWidth = info.frames[i].comps[k].width;
+                sampleHeight = info.frames[i].comps[k].height;
+                break;
+            }
+
+            imageComps[k] = (u8*)linear_allocate(alloc, sampleWidth * sampleHeight * bits);
+        }
+
+        for(u32 k = 0; k < info.frames[i].scanCount; k++) {
+
+            auto QT = info.frames[i].scans[k].tables.quantizationTable;
+            for(u32 j = 0; j < 4; j++) {
+                
+                auto QQQ = QT[j];
+                if(!QT[j]) continue;;
+                for(u32 k = 0; k < 64; k++) {
+                    u32 zig = jpeg_de_zig_zag[k];
+                    if(QT[j]->elemPrecision) {
+                        QTs[j][zig] = Mem<u16>(QT[j]->Q + k*2);
+                    }
+                    else {
+                        QTs[j][zig] = QT[j]->Q[k];
+                    }
+                }
+            }
+            for(u32 j = 0; j < 8; j++) {
+
+                auto huffmanDescriptor = info.frames[i].scans[k].tables.huffmanTables[j];
+                if(!huffmanDescriptor) continue;
+                ComputeHuffmanTableJPEG(huffs+j, huffmanDescriptor->L, huffmanDescriptor->V);
+            }
+
+            switch(info.frames[i].mode) {
+            case JPEG_BASELINE_SEQUINTAL_DCT:
+                DecodeJPEGEntropyHuffmanSequential(info.frames + i, info.frames[i].scans + k, huffs, QTs, imageComps);
+                break;
+            case JPEG_PROGRESSIVE_DCT:
+                DecodeJPEGEntropyHuffmanProgressive(info.frames + i, info.frames[i].scans + k, huffs, (i16**)imageComps);
                 break;
             }
         }
 
-        it = (byte*)(marker+1);
-        global_print("s", descriptor.name, '\n');
-        if(descriptor.payload) {
-            auto markerPaylod = (JFIFMarker*)marker;
-            auto len = ReverseByteOrder(markerPaylod->length);
-            global_print("suc", " len ", len, '\n');
+        if(info.frames[i].mode == JPEG_PROGRESSIVE_DCT) {
 
-            it = markerPaylod->payload + len - 2;
+            u8* compFinal[4];
+            for(u32 k = 0; k < info.frames[i].segment->paramCount; k++) {
+                
+                u32 w = (info.frames[i].comps[k].width + 7) >> 3;
+                u32 h = (info.frames[i].comps[k].height + 7) >> 3;
+
+                u32 sampleWidth = info.frames[i].mcuX * info.frames[i].comps[k].samplingFactorX * 8;
+                u32 sampleHeight = info.frames[i].mcuY * info.frames[i].comps[k].samplingFactorY * 8;
+                compFinal[k] = (u8*)linear_allocate(alloc, sampleWidth * sampleHeight);
+                
+                auto compCoef = (i16*)(imageComps[k]);
+                auto qt = QTs[info.frames[i].comps[k].QTDstSelector];
+                for(u32 j = 0; j < h; j++) {
+                    for(u32 l = 0; l < w; l++) {
+                        
+                        i16* coefs = compCoef + 64 * ((j * info.frames[i].comps[k].width/8) + l);
+                        for(u32 z = 0; z < 64; z++) {
+                            block[z] = coefs[z] * qt[z];
+                        }
+                        stbi__idct_simd(compFinal[k], sampleWidth, block);
+                    }
+                }
+
+                imageComps[k] = compFinal[k];
+            }
+        }
+
+        JPEGResample(info.frames + i, completeImg, imageComps[0], imageComps[1], imageComps[2]);
+        alloc->top = top;
+    }
+
+    alloc->top = top0;
+    return ret;
+}
+
+u32 MemCmp(byte* s0, byte* s1, u32 size) {
+
+    for(u32 i = 0; i < size; i++) {
+
+        if(s0[i] != s1[i]) {
+            return i;
         }
     }
-    global_io_flush();
+    return size;
 }
 
-u32 AddBinary(bool* a, u32 aCount, bool* b, u32 bCount, bool* result) {
+void SlowIDCT1D(f32* block, u32 n ) {
 
-    i32 s = 0;
-    i32 i = aCount - 1;
-    i32 j = bCount - 1;
-    u32 ret = 0;
-    while (i >= 0 || j >= 0 || s == 1) {      
-        // Compute sum of last digits and carry
-        s += (i >= 0 ? a[i] : 0);
-        s += (j >= 0 ? b[j] : 0);
-        // If current digit sum is 1 or 3, add 1 to result
-        result[ret++] = s & 1;
-        // Compute carry
-        s /= 2;
-        // Move to next digits
-        i--;
-        j--;
+    f32 cpy[n];
+    memcpy(cpy, block, n * sizeof(f32));
+    for(u32 i = 0; i < 8; i++) {
+
+        f32 sum = 0;
+        for(u32 u = 0; u < 8; u++) {
+
+            f32 alpha = 1;
+            if(u == 0) {
+                alpha = sqrt(1.0f / f32(n));
+            }
+            else {
+                alpha = sqrt(2.0f / f32(n));
+            }
+            f32 cosArg = (3.14 * f32(u)) / (2.0f * f32(n));
+            f32 c = cos(cosArg * (2.0f * f32(i) + 1.0f) );
+            sum += alpha * c * cpy[u];
+        }
+
+        block[i] = sum;
     }
-
-    // flip
-    for(u32 i = 0; i < ret/2; i++) {
-        result[i] = result[ret - i - 1];
-    }
-
-    return ret;
 }
-u32 IncBinary(bool* a, u32 aCount, bool* result) {
+f32 IDCT2D(u32 x, u32 y, i16 data[64]) {
 
-    i32 s = 0;
-    i32 i = aCount - 1;
-    i32 j = 0;
-    u32 ret = 0;
-    while (i >= 0 || j >= 0 || s == 1) {      
-        // Compute sum of last digits and carry
-        s += (i >= 0 ? a[i] : 0);
-        s += (j >= 0 ? 1 : 0);
-        // If current digit sum is 1 or 3, add 1 to result
-        result[ret++] = s & 1;
-        // Compute carry
-        s /= 2;
-        // Move to next digits
-        i--;
-        j--;
+    f32 sum = 0;
+    for(u32 u = 0; u < 8; u++) {
+
+        f32 alphaU;
+        if(u == 0) {
+            alphaU = 1.f / sqrt(2.f);
+        }
+        else {
+            alphaU = 1.f;
+        }
+        f32 cosU = cos( ((2.f * x + 1.f) * (3.14 * u)) / 16.f );
+        for(u32 v = 0; v < 8; v++) {
+
+            f32 alphaV;
+            if(v == 0) {
+                alphaV = 1.f / sqrt(2.f);
+            }
+            else {
+                alphaV = 1.f;
+            }
+
+            f32 cosV = cos( ((2.f * y + 1.f) * (3.14 * v)) / 16.f );
+            sum += alphaU * alphaV * (f32)data[u * 8 + v] * cosU * cosV;
+        }
     }
 
-    // flip
-    for(u32 i = 0; i < ret/2; i++) {
-        result[i] = result[ret - i - 1];
-    }
-
-    return ret;
+    return sum / 4.f;
 }
+void SlowComputeJPEGIDCT2D(u8* dst, i16 src[64], u32 stride) {
+
+    //i16 copy[64];
+    //memcpy(copy, src, sizeof(copy));
+    for(u32 x = 0; x < 8; x++) {
+
+        for(u32 y = 0; y < 8; y++) {
+            dst[y] = (u8) (round(IDCT2D(x, y, src)) + 128);
+        }
+        dst += stride;
+    }
+}
+
+void SlowIDCT(f32 block[64]) {
+
+
+    f32 col[8];
+    for(u32 i = 0; i < 8; i++) {
+
+        col[0] = block[8 * 0 + i];
+        col[1] = block[8 * 1 + i];
+        col[2] = block[8 * 2 + i];
+        col[3] = block[8 * 3 + i];
+        col[4] = block[8 * 4 + i];
+        col[5] = block[8 * 5 + i];
+        col[6] = block[8 * 6 + i];
+        col[7] = block[8 * 7 + i];
+        SlowIDCT1D(col, 8);
+        block[8 * 0 + i] = col[0];
+        block[8 * 1 + i] = col[1];
+        block[8 * 2 + i] = col[2];
+        block[8 * 3 + i] = col[3];
+        block[8 * 4 + i] = col[4];
+        block[8 * 5 + i] = col[5];
+        block[8 * 6 + i] = col[6];
+        block[8 * 7 + i] = col[7];
+    }
+    for(u32 i = 0; i < 8; i++) {
+        SlowIDCT1D(block + i*8, 8);
+
+        for(u32 k = 0; k < 8; k++) {
+            block[i * 8 + k] = round(block[i * 8 + k] + 128);
+        }
+    }
+}
+void SlowIDCT2(f32 block[64]) {
+
+    for(u32 i = 0; i < 8; i++) {
+        SlowIDCT1D(block + i*8, 8);
+    }
+    f32 col[8];
+    for(u32 i = 0; i < 8; i++) {
+
+        col[0] = block[8 * 0 + i];
+        col[1] = block[8 * 1 + i];
+        col[2] = block[8 * 2 + i];
+        col[3] = block[8 * 3 + i];
+        col[4] = block[8 * 4 + i];
+        col[5] = block[8 * 5 + i];
+        col[6] = block[8 * 6 + i];
+        col[7] = block[8 * 7 + i];
+        SlowIDCT1D(col, 8);
+        block[8 * 0 + i] = col[0];
+        block[8 * 1 + i] = col[1];
+        block[8 * 2 + i] = col[2];
+        block[8 * 3 + i] = col[3];
+        block[8 * 4 + i] = col[4];
+        block[8 * 5 + i] = col[5];
+        block[8 * 6 + i] = col[6];
+        block[8 * 7 + i] = col[7];
+    }
+    for(u32 k = 0; k < 64; k++) {
+        block[k] = round(block[k] + 128);
+    }
+}
+
+void JPEGInverseDCT8x8(u8* dst, i16 src[64], u32 stride) {
+    
+    i16 col[8];
+    i16 cpy[64];
+    for(u32 i = 0; i < 8; i++) {
+
+        col[0] = src[8 * 0 + i];
+        col[1] = src[8 * 1 + i];
+        col[2] = src[8 * 2 + i];
+        col[3] = src[8 * 3 + i];
+        col[4] = src[8 * 4 + i];
+        col[5] = src[8 * 5 + i];
+        col[6] = src[8 * 6 + i];
+        col[7] = src[8 * 7 + i];
+        FIDCT8(col, col);
+        cpy[8 * 0 + i] = col[0];
+        cpy[8 * 1 + i] = col[1];
+        cpy[8 * 2 + i] = col[2];
+        cpy[8 * 3 + i] = col[3];
+        cpy[8 * 4 + i] = col[4];
+        cpy[8 * 5 + i] = col[5];
+        cpy[8 * 6 + i] = col[6];
+        cpy[8 * 7 + i] = col[7];
+    }
+    for(u32 i = 0; i < 8; i++) {
+
+        FIDCT8(cpy + i * 8, cpy + i * 8);
+        for(u32 k = 0; k < 8; k++) {
+            dst[k] = (u8)(cpy[i * 8 + k] + 128);
+        }
+        dst += stride;
+    }
+}
+
+constexpr f64 S[] = {
+	0.353553390593273762200422, // 1.0f / (2.0f * sqrt(2));
+	0.254897789552079584470970, // 1.0f / (4.0f * cos(1.0f * PI / 16.0f) );
+	0.270598050073098492199862, // 1.0f / (4.0f * cos(2.0f * PI / 16.0f) );
+	0.300672443467522640271861, // 1.0f / (4.0f * cos(3.0f * PI / 16.0f) );
+	0.353553390593273762200422, // 1.0f / (4.0f * cos(4.0f * PI / 16.0f) );
+	0.449988111568207852319255, // 1.0f / (4.0f * cos(5.0f * PI / 16.0f) );
+	0.653281482438188263928322, // 1.0f / (4.0f * cos(6.0f * PI / 16.0f) );
+	1.281457723870753089398043, // 1.0f / (4.0f * cos(7.0f * PI / 16.0f) );
+};
+constexpr f64 A[] = {
+	NAN,
+	0.707106781186547524400844, // cos(4.0f * PI / 16.0f);
+	0.541196100146196984399723, // cos(2.0f * PI / 16.0f) - cos(6.0f * PI / 16.0f);
+	0.707106781186547524400844, // cos(4.0f * PI / 16.0f);
+	1.306562964876376527856643, // cos(6.0f * PI / 16.0f) + cos(2.0f * PI / 16.0f);
+	0.382683432365089771728460, // cos(6.0f * PI / 16.0f);
+};
+
+
+void FIDCT8(i16 dst[8], i16 src[8]) {
+
+	const f32 v15 = src[0] / S[0];
+	const f32 v26 = src[1] / S[1];
+	const f32 v21 = src[2] / S[2];
+	const f32 v28 = src[3] / S[3];
+	const f32 v16 = src[4] / S[4];
+	const f32 v25 = src[5] / S[5];
+	const f32 v22 = src[6] / S[6];
+	const f32 v27 = src[7] / S[7];
+	
+	const f32 v19 = (v25 - v28) / 2;
+	const f32 v20 = (v26 - v27) / 2;
+	const f32 v23 = (v26 + v27) / 2;
+	const f32 v24 = (v25 + v28) / 2;
+	
+	const f32 v7  = (v23 + v24) / 2;
+	const f32 v11 = (v21 + v22) / 2;
+	const f32 v13 = (v23 - v24) / 2;
+	const f32 v17 = (v21 - v22) / 2;
+	
+	const f32 v8 = (v15 + v16) / 2;
+	const f32 v9 = (v15 - v16) / 2;
+	
+	const f32 v18 = (v19 - v20) * A[5];  // Different from original
+	const f32 v12 = (v19 * A[4] - v18) / (A[2] * A[5] - A[2] * A[4] - A[4] * A[5]);
+	const f32 v14 = (v18 - v20 * A[2]) / (A[2] * A[5] - A[2] * A[4] - A[4] * A[5]);
+	
+	const f32 v6 = v14 - v7;
+	const f32 v5 = v13 / A[3] - v6;
+	const f32 v4 = -v5 - v12;
+	const f32 v10 = v17 / A[1] - v11;
+	
+	const f32 v0 = (v8 + v11) / 2;
+	const f32 v1 = (v9 + v10) / 2;
+	const f32 v2 = (v9 - v10) / 2;
+	const f32 v3 = (v8 - v11) / 2;
+	
+	dst[0] = round((v0 + v7) / 2);
+	dst[1] = round((v1 + v6) / 2);
+	dst[2] = round((v2 + v5) / 2);
+	dst[3] = round((v3 + v4) / 2);
+	dst[4] = round((v3 - v4) / 2);
+	dst[5] = round((v2 - v5) / 2);
+	dst[6] = round((v1 - v6) / 2);
+	dst[7] = round((v0 - v7) / 2);
+}
+/*
+void FixedPointFastInverseDCT8(i16 dst[8], i16 src[8]) {
+
+    constexpr f64 F64_MUL_12_BIT = 1 << 12;
+    constexpr i32 S_i32[] = {
+        i32( (1.0 / 0.353553390593273762200422) * F64_MUL_12_BIT), // 1.0f / (2.0f * sqrt(2));
+        i32( (1.0 / 0.254897789552079584470970) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(1.0f * PI / 16.0f) );
+        i32( (1.0 / 0.270598050073098492199862) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(2.0f * PI / 16.0f) );
+        i32( (1.0 / 0.300672443467522640271861) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(3.0f * PI / 16.0f) );
+        i32( (1.0 / 0.353553390593273762200422) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(4.0f * PI / 16.0f) );
+        i32( (1.0 / 0.449988111568207852319255) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(5.0f * PI / 16.0f) );
+        i32( (1.0 / 0.653281482438188263928322) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(6.0f * PI / 16.0f) );
+        i32( (1.0 / 1.281457723870753089398043) * F64_MUL_12_BIT), // 1.0f / (4.0f * cos(7.0f * PI / 16.0f) );
+    };
+    constexpr i32 A_i32[] = {
+        i32(0.707106781186547524400844 * F64_MUL_12_BIT), // cos(4.0f * PI / 16.0f);
+        i32(0.541196100146196984399723 * F64_MUL_12_BIT), // cos(2.0f * PI / 16.0f) - cos(6.0f * PI / 16.0f);
+        i32(0.707106781186547524400844 * F64_MUL_12_BIT), // cos(4.0f * PI / 16.0f);
+        i32(1.306562964876376527856643 * F64_MUL_12_BIT), // cos(6.0f * PI / 16.0f) + cos(2.0f * PI / 16.0f);
+        i32(0.382683432365089771728460 * F64_MUL_12_BIT), // cos(6.0f * PI / 16.0f);
+    };
+
+}
+*/

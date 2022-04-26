@@ -343,6 +343,7 @@ RECENT REVISION HISTORY:
 
 #ifndef STBI_NO_STDIO
 #include <stdio.h>
+#include <common.h>
 #endif // STBI_NO_STDIO
 
 #define STBI_VERSION 1
@@ -1022,7 +1023,9 @@ static int stbi__mad4sizes_valid(int a, int b, int c, int d, int add)
 static void *stbi__malloc_mad2(int a, int b, int add)
 {
    if (!stbi__mad2sizes_valid(a, b, add)) return NULL;
-   return stbi__malloc(a*b + add);
+   auto ret = stbi__malloc(a*b + add);
+   memset(ret, 0, a*b + add);
+   return ret;
 }
 #endif
 
@@ -2032,7 +2035,10 @@ static void stbi__grow_buffer_unsafe(stbi__jpeg *j)
       unsigned int b = j->nomore ? 0 : stbi__get8(j->s);
       if (b == 0xff) {
          int c = stbi__get8(j->s);
-         while (c == 0xff) c = stbi__get8(j->s); // consume fill bytes
+         while (c == 0xff) {
+            c = stbi__get8(j->s); // consume fill bytes
+         }
+            
          if (c != 0) {
             j->marker = (unsigned char) c;
             j->nomore = 1;
@@ -2155,6 +2161,9 @@ static const stbi_uc stbi__jpeg_dezigzag[64+15] =
    63, 63, 63, 63, 63, 63, 63
 };
 
+
+
+
 // decode one 64-entry block--
 static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman *hdc, stbi__huffman *hac, stbi__int16 *fac, int b, stbi__uint16 *dequant)
 {
@@ -2162,7 +2171,9 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
    int t;
 
    if (j->code_bits < 16) stbi__grow_buffer_unsafe(j);
+
    t = stbi__jpeg_huff_decode(j, hdc);
+   
    if (t < 0 || t > 15) return stbi__err("bad huffman code","Corrupt JPEG");
 
    // 0 all the ac values now so we can do it 32-bits at a time
@@ -2173,12 +2184,14 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
    j->img_comp[b].dc_pred = dc;
    data[0] = (short) (dc * dequant[0]);
 
+
    // decode AC components, see JPEG spec
    k = 1;
    do {
       unsigned int zig;
       int c,r,s;
       if (j->code_bits < 16) stbi__grow_buffer_unsafe(j);
+
       c = (j->code_buffer >> (32 - FAST_BITS)) & ((1 << FAST_BITS)-1);
       r = fac[c];
       if (r) { // fast-AC path
@@ -2189,7 +2202,12 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
          // decode into unzigzag'd location
          zig = stbi__jpeg_dezigzag[k++];
          data[zig] = (short) ((r >> 8) * dequant[zig]);
-      } else {
+      } else
+      /*
+      */
+
+      {
+
          int rs = stbi__jpeg_huff_decode(j, hac);
          if (rs < 0) return stbi__err("bad huffman code","Corrupt JPEG");
          s = rs & 15;
@@ -2200,8 +2218,10 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
          } else {
             k += r;
             // decode into unzigzag'd location
+            ASSERT(k < 64);
             zig = stbi__jpeg_dezigzag[k++];
-            data[zig] = (short) (stbi__extend_receive(j,s) * dequant[zig]);
+            auto extend = stbi__extend_receive(j,s);
+            data[zig] = (short) (extend * dequant[zig]);
          }
       }
    } while (k < 64);
@@ -2366,7 +2386,7 @@ stbi_inline static stbi_uc stbi__clamp(int x)
    return (stbi_uc) x;
 }
 
-#define stbi__f2f(x)  ((int) (((x) * 4096 + 0.5)))
+#define stbi__f2f(x)  ((int) ((x) * 4096 + 0.5) )
 #define stbi__fsh(x)  ((x) * 4096)
 
 // derived from jidctint -- DCT_ISLOW
@@ -2407,7 +2427,7 @@ stbi_inline static stbi_uc stbi__clamp(int x)
    t1 += p2+p4;                                \
    t0 += p1+p3;
 
-static void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
+void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
 {
    int i,val[64],*v=val;
    stbi_uc *o;
@@ -2470,7 +2490,7 @@ static void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
 // sse2 integer IDCT. not the fastest possible implementation but it
 // produces bit-identical results to the generic C version so it's
 // fully "transparent".
-static void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
+void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
 {
    // This is constructed to match our regular (generic) integer IDCT exactly.
    __m128i row0, row1, row2, row3, row4, row5, row6, row7;
@@ -2889,8 +2909,15 @@ static void stbi__jpeg_reset(stbi__jpeg *j)
    // since we don't even allow 1<<30 pixels
 }
 
+byte global_mem[KILO_BYTE * 2];
+auto global_parserAlloc = make_linear_allocator(global_mem, KILO_BYTE * 128);
+JPEGInfo global_info;
+HuffmanDictionary global_huffs[8];
+u16 global_QTs[4][64];
+
 static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
 {
+
    stbi__jpeg_reset(z);
    if (!z->progressive) {
       if (z->scan_n == 1) {
@@ -2907,7 +2934,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
             for (i=0; i < w; ++i) {
                int ha = z->img_comp[n].ha;
                if (!stbi__jpeg_decode_block(z, data, z->huff_dc+z->img_comp[n].hd, z->huff_ac+ha, z->fast_ac[ha], n, z->dequant[z->img_comp[n].tq])) return 0;
-               z->idct_block_kernel(z->img_comp[n].data+z->img_comp[n].w2*j*8+i*8, z->img_comp[n].w2, data);
+               z->idct_block_kernel(z->img_comp[n].data + z->img_comp[n].w2*j*8+i*8, z->img_comp[n].w2, data);
                // every data block is an MCU, so countdown the restart interval
                if (--z->todo <= 0) {
                   if (z->code_bits < 24) stbi__grow_buffer_unsafe(z);
@@ -2922,9 +2949,11 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
       } else { // interleaved
          int i,j,k,x,y;
          STBI_SIMD_ALIGN(short, data[64]);
+
          for (j=0; j < z->img_mcu_y; ++j) {
             for (i=0; i < z->img_mcu_x; ++i) {
                // scan an interleaved mcu... process scan_n components in order
+
                for (k=0; k < z->scan_n; ++k) {
                   int n = z->order[k];
                   // scan out an mcu's worth of this component; that's just determined
@@ -2948,6 +2977,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                }
             }
          }
+
          return 1;
       }
    } else {
@@ -2996,6 +3026,8 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                         short *data = z->img_comp[n].coeff + 64 * (x2 + y2 * z->img_comp[n].coeff_w);
                         if (!stbi__jpeg_decode_block_prog_dc(z, data, &z->huff_dc[z->img_comp[n].hd], n))
                            return 0;
+
+                        DecodeJPEGBlockHuffmanProgDC(0, 0, 0, 0, 0, 0);
                      }
                   }
                }
@@ -3060,8 +3092,10 @@ static int stbi__process_marker(stbi__jpeg *z, int m)
             if (p != 0 && p != 1) return stbi__err("bad DQT type","Corrupt JPEG");
             if (t > 3) return stbi__err("bad DQT table","Corrupt JPEG");
 
-            for (i=0; i < 64; ++i)
+            for (i=0; i < 64; ++i) {
                z->dequant[t][stbi__jpeg_dezigzag[i]] = (stbi__uint16)(sixteen ? stbi__get16be(z->s) : stbi__get8(z->s));
+            }
+
             L -= (sixteen ? 129 : 65);
          }
          return L==0;
@@ -3746,7 +3780,7 @@ static void stbi__setup_jpeg(stbi__jpeg *j)
    j->idct_block_kernel = stbi__idct_block;
    j->YCbCr_to_RGB_kernel = stbi__YCbCr_to_RGB_row;
    j->resample_row_hv_2_kernel = stbi__resample_row_hv_2;
-
+/*
 #ifdef STBI_SSE2
    if (stbi__sse2_available()) {
       j->idct_block_kernel = stbi__idct_simd;
@@ -3760,6 +3794,7 @@ static void stbi__setup_jpeg(stbi__jpeg *j)
    j->YCbCr_to_RGB_kernel = stbi__YCbCr_to_RGB_simd;
    j->resample_row_hv_2_kernel = stbi__resample_row_hv_2_simd;
 #endif
+*/
 }
 
 // clean up the temporary component buffers
@@ -3787,6 +3822,7 @@ static stbi_uc stbi__blinn_8x8(stbi_uc x, stbi_uc y)
 
 static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp, int req_comp)
 {
+   Timer <micro_second_t> t0;
    int n, decode_n, is_rgb;
    z->s->img_n = 0; // make stbi__cleanup_jpeg safe
 
@@ -3794,7 +3830,11 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
    if (req_comp < 0 || req_comp > 4) return stbi__errpuc("bad req_comp", "Internal error");
 
    // load a jpeg image from whichever source, but leave in YCbCr format
+   {
+   Timer <micro_second_t> t;
    if (!stbi__decode_jpeg_image(z)) { stbi__cleanup_jpeg(z); return NULL; }
+   }
+   Timer <micro_second_t> t;
 
    // determine actual number of components to generate
    n = req_comp ? req_comp : z->s->img_n >= 3 ? 3 : 1;
@@ -4569,6 +4609,7 @@ static const stbi_uc stbi__depth_scale_table[9] = { 0, 0xff, 0x55, 0, 0x11, 0,0,
 // create the png data from post-deflated data
 static int stbi__create_png_image_raw(stbi__png *a, stbi_uc *raw, stbi__uint32 raw_len, int out_n, stbi__uint32 x, stbi__uint32 y, int depth, int color)
 {
+   
    int bytes = (depth == 16? 2 : 1);
    stbi__context *s = a->s;
    stbi__uint32 i,j,stride = x*out_n*bytes;

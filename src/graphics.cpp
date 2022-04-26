@@ -94,23 +94,21 @@ Mat<f32, 3,3> ComputeRotarionXMat4(f32 x) {
     };
     return rot;
 }
-Mat4<f32> ComputeRotarionYMat4(f32 x) {
+Mat<f32, 3,3> ComputeRotarionYMat4(f32 x) {
 
-    Mat4<f32> rot {
-        cos(x),0,sin(x),0,
-        0,1,0,0
-        -sin(x),0,cos(x),0,
-        0,0,0,1
+    Mat<f32, 3,3> rot {
+        cos(x),0,sin(x),
+        0,1,0,
+        -sin(x),0,cos(x),
     };
     return rot;
 }
-Mat4<f32> ComputeRotarionZMat4(f32 x) {
+Mat<f32, 3,3> ComputeRotarionZMat4(f32 x) {
 
-    Mat4<f32> rot {
-        cos(x),-sin(x),0,0,
-        sin(x),cos(x),0,0,
-        0,0,1,0,
-        0,0,0,1
+    Mat<f32, 3,3> rot {
+        cos(x),-sin(x),0,
+        sin(x),cos(x),0,
+        0,0,1,
     };
     return rot;
 }

@@ -476,8 +476,8 @@ Mat<f32, 3,3> OrientTo(vec<f32, 3> from, vec<f32, 3> to, vec<f32, 3> worldUp);
 Mat4<f32> LookAt(vec<f32, 3> from, vec<f32, 3> to, vec<f32, 3> worldUp = {0,1,0});
 Mat4<f32> ComputePerspectiveMat4(f32 fov , f32 aspect , f32 near , f32 far);
 Mat<f32, 3,3> ComputeRotarionXMat4(f32 x);
-Mat4<f32> ComputeRotarionYMat4(f32 x);
-Mat4<f32> ComputeRotarionZMat4(f32 x);
+Mat<f32, 3,3> ComputeRotarionYMat4(f32 x);
+Mat<f32, 3,3> ComputeRotarionZMat4(f32 x);
 
 struct MemBlock {
     u64 offset;
