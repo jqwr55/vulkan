@@ -1,13 +1,13 @@
 COMPILER = g++
 CFLAGS = -fno-exceptions -std=c++17 -g
-LDFLAGS = -lvulkan -ldl -pthread -lX11
+LDFLAGS = -lvulkan -ldl -pthread -lX11 `pkg-config --cflags --libs xcb`
 
 INCLUDE_FLAGS = -I ./src -I ./libs/include/
 SRC_PATH = ./src
 BIN_PATH = ./bin
 SHADER_SOURCE_PATH = ./res
 
-LDFILES = ./libs/libglfw3.a
+LDFILES =
 SRC_FILES = $(wildcard $(SRC_PATH)/*.cpp)
 OBJ_FILES = $(subst .cpp,.o, $(subst $(SRC_PATH),$(BIN_PATH),$(SRC_FILES)))
 HEADER_FILES = $(wildcard $(SRC_PATH)/*.h)

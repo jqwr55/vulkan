@@ -116,6 +116,7 @@ Mat<f32, 3,3> ComputeRotarionZMat4(f32 x) {
 GpuHeap make_gpu_heap(void* used_blocks, u32 maxAllocCount, u32 size) {
 
     GpuHeap heap{};
+    heap.max_block_count = maxAllocCount;
     heap.used_blocks = (GpuMemoryBlock*)used_blocks;
     heap.used_block_count = 1;
     heap.used_blocks[0].free = true;

@@ -494,6 +494,7 @@ struct GpuMemoryBlock {
 struct GpuHeap {
     GpuMemoryBlock* used_blocks;
     u32             used_block_count;
+    u32             max_block_count;
 };
 
 void enumarate_blocks(GpuHeap* heap);

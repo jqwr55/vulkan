@@ -84,6 +84,7 @@ void global_io_flush();
 void global_print(const char* format ...);
 void runtime_panic(const char* file, u32 line);
 
+
 #define RUNTIME_CHECK(x)                  \
     if(!x) {                              \
         runtime_panic(__FILE__, __LINE__);\
@@ -809,9 +810,9 @@ struct DynamicBufferLocal {
     u32 cap;
     u32 size;
 
-    void Init(state_t* allocState) {
-        mem = (T*)LOG(ALLOCATE(allocState, sizeof(T)));
-        cap = 1;
+    void Init(state_t* allocState, u32 cap) {
+        mem = (T*)LOG(ALLOCATE(allocState, cap * sizeof(T)));
+        cap = cap;
         size = 0;
     }
     void CopyInit(state_t* allocState, DynamicBufferLocal<T,state_t,ALLOCATE,FREE> *buff) {
@@ -1010,24 +1011,24 @@ struct StaticBufferGlobal {
 };
 template <typename T, typename state_t, void* ALLOCATE(state_t* state, u32 size), void FREE(state_t* state, void* mem)>
 struct StaticBufferLocal {
-    T *memory;
+    T* mem;
     u32 size;
     void Init(state_t* allocatorState, u32 size_) {
         static_assert(std::is_trivially_destructible<T>::value, "T must be trivally destructible");
         static_assert(std::is_trivially_copyable<T>::value, "T must be trivally copyable");
 
         size = size_;
-        memory = (T *)LOG(ALLOCATE(allocatorState, size * sizeof(T)));
+        mem = (T *)LOG(ALLOCATE(allocatorState, size * sizeof(T)));
     }
     void Free(state_t* allocatorState) {
-        LOG(FREE(allocatorState, memory));
+        LOG(FREE(allocatorState, mem));
     }
     void Fill(T *mem, u32 c) {
         ASSERT(c <= size);
-        memcpy(memory, mem, sizeof(T) * c);
+        memcpy(mem, mem, sizeof(T) * c);
     }
     T &operator[](u32 i) {
-        return memory[i];
+        return mem[i];
     }
 };
 
@@ -1256,6 +1257,29 @@ struct __attribute__ ((packed)) APP0Payload {
     u16 yThumbnail;
     u8 thumbnailData[];
 };
+
+struct __attribute__ ((packed)) APP1Payload {
+    char identifier[5];
+    byte padding;
+    // TIFF header
+    char endianness[2];
+    u16 fixed42Byte;
+    u32 IFDOffset;
+};
+struct __attribute__ ((packed)) IFD {
+    u16 tag;
+    u16 type;
+    u32 count;
+    u32 valueOffset;
+};
+struct __attribute__ ((packed)) IFDHeader {
+    u16 count;
+    IFD IFDs[];
+};
+struct __attribute__ ((packed)) IFDEnd {
+    u32 nextIFD;
+};
+
 struct JPEGMarker {
     u8 signature;
     u8 type;
@@ -1420,8 +1444,8 @@ struct JPEGScanCompInfo {
     u8 entropyCodingSelectorAC;
 };
 struct JPEGTables {
-    JPEGQuantizationParameter* quantizationTable[4];
 
+    JPEGQuantizationParameter* quantizationTable[4];
     union {
         JPEGArithmeticParameter* arithmeticTables[8];
         struct {
@@ -1436,6 +1460,7 @@ struct JPEGTables {
             JPEGHuffmanParameter* huffmanTablesAC[4];
         };
     };
+    u32 restarInterval;
 };
 struct JPEGScanInfo {
 
@@ -1455,8 +1480,8 @@ struct JPEGFrameInfo {
     JPEGScanInfo* scans;
     JPEGComponentInfo comps[4];
     u32 scanCount;
-    u32 mcuX;
-    u32 mcuY;
+    u32 interleavedMcuX;
+    u32 interleavedMcuY;
     u32 height;
 	u32 width;
     u8 samplePrecision;
@@ -1494,8 +1519,9 @@ void PrintHuffmanTableJPEG(u8* bits, u8* symbols);
 void FIDCT8(i16 dst[8], i16 src[8]);
 void SlowComputeJPEGIDCT2D(u8* dst, i16 src[64], u32 stride);
 void JPEGInverseDCT8x8(u8* dst, i16 src[64], u32 stride);
-ImageDescriptor LoadJPEG(byte* mem, u32 size, LinearAllocator* alloc);
+ImageDescriptor MakeJPEGImage(byte* mem, u32 size, LinearAllocator* alloc);
 u32 MaxMemoryRequiredJPEG(byte* mem);
 i32 DecodeJPEGBlockHuffmanProgDC(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, u32 al, u32 ah, i32 pred);
+i32 DecodeJPEGBlockHuffmanProgAC(i16 dst[64], BitStream* src, HuffmanDictionary* huffAC, u32 spectralStart, u32 spectralEnd, u32 al, u32 ah, i32 eobRun);
 
 void stbi__idct_block(u8* out, int out_stride, short data[64]);

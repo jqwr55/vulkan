@@ -1335,6 +1335,7 @@ STBIDEF stbi_uc *stbi_load(char const *filename, int *x, int *y, int *comp, int 
 
 STBIDEF stbi_uc *stbi_load_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
 {
+
    unsigned char *result;
    stbi__context s;
    stbi__start_file(&s,f);
@@ -1388,6 +1389,7 @@ STBIDEF stbi_us *stbi_load_16_from_callbacks(stbi_io_callbacks const *clbk, void
 
 STBIDEF stbi_uc *stbi_load_from_memory(stbi_uc const *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
+
    stbi__context s;
    stbi__start_mem(&s,buffer,len);
    return stbi__load_and_postprocess_8bit(&s,x,y,comp,req_comp);
@@ -2274,6 +2276,8 @@ static int stbi__jpeg_decode_block_prog_ac(stbi__jpeg *j, short data[64], stbi__
          unsigned int zig;
          int c,r,s;
          if (j->code_bits < 16) stbi__grow_buffer_unsafe(j);
+
+         /*
          c = (j->code_buffer >> (32 - FAST_BITS)) & ((1 << FAST_BITS)-1);
          r = fac[c];
          if (r) { // fast-AC path
@@ -2283,7 +2287,7 @@ static int stbi__jpeg_decode_block_prog_ac(stbi__jpeg *j, short data[64], stbi__
             j->code_bits -= s;
             zig = stbi__jpeg_dezigzag[k++];
             data[zig] = (short) ((r >> 8) * (1 << shift));
-         } else {
+         } else*/ {
             int rs = stbi__jpeg_huff_decode(j, hac);
             if (rs < 0) return stbi__err("bad huffman code","Corrupt JPEG");
             s = rs & 15;
@@ -2490,7 +2494,7 @@ void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
 // sse2 integer IDCT. not the fastest possible implementation but it
 // produces bit-identical results to the generic C version so it's
 // fully "transparent".
-void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
+static void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
 {
    // This is constructed to match our regular (generic) integer IDCT exactly.
    __m128i row0, row1, row2, row3, row4, row5, row6, row7;
@@ -2909,11 +2913,6 @@ static void stbi__jpeg_reset(stbi__jpeg *j)
    // since we don't even allow 1<<30 pixels
 }
 
-byte global_mem[KILO_BYTE * 2];
-auto global_parserAlloc = make_linear_allocator(global_mem, KILO_BYTE * 128);
-JPEGInfo global_info;
-HuffmanDictionary global_huffs[8];
-u16 global_QTs[4][64];
 
 static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
 {
@@ -2981,7 +2980,9 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
          return 1;
       }
    } else {
+
       if (z->scan_n == 1) {
+
          int i,j;
          int n = z->order[0];
          // non-interleaved data, we just need to process one block at a time,
@@ -3001,6 +3002,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                   if (!stbi__jpeg_decode_block_prog_ac(z, data, &z->huff_ac[ha], z->fast_ac[ha]))
                      return 0;
                }
+
                // every data block is an MCU, so countdown the restart interval
                if (--z->todo <= 0) {
                   if (z->code_bits < 24) stbi__grow_buffer_unsafe(z);
@@ -3012,6 +3014,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
          return 1;
       } else { // interleaved
          int i,j,k,x,y;
+
          for (j=0; j < z->img_mcu_y; ++j) {
             for (i=0; i < z->img_mcu_x; ++i) {
                // scan an interleaved mcu... process scan_n components in order
@@ -3027,7 +3030,6 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                         if (!stbi__jpeg_decode_block_prog_dc(z, data, &z->huff_dc[z->img_comp[n].hd], n))
                            return 0;
 
-                        DecodeJPEGBlockHuffmanProgDC(0, 0, 0, 0, 0, 0);
                      }
                   }
                }
@@ -3058,8 +3060,11 @@ static void stbi__jpeg_finish(stbi__jpeg *z)
       // dequantize and idct the data
       int i,j,n;
       for (n=0; n < z->s->img_n; ++n) {
+
+
          int w = (z->img_comp[n].x+7) >> 3;
          int h = (z->img_comp[n].y+7) >> 3;
+
          for (j=0; j < h; ++j) {
             for (i=0; i < w; ++i) {
                short *data = z->img_comp[n].coeff + 64 * (i + j * z->img_comp[n].coeff_w);
@@ -3067,6 +3072,9 @@ static void stbi__jpeg_finish(stbi__jpeg *z)
                z->idct_block_kernel(z->img_comp[n].data+z->img_comp[n].w2*j*8+i*8, z->img_comp[n].w2, data);
             }
          }
+
+         //auto IT = MemCmp(global_comp_final[n], z->img_comp[n].data, z->img_comp[n].x * z->img_comp[n].y * 2);
+         //IT = MemCmp(global_imageComps[n], z->img_comp[n].coeff, z->img_comp[n].x * z->img_comp[n].y * 2);
       }
    }
 }
@@ -3398,6 +3406,23 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
       }
       m = stbi__get_marker(j);
    }
+
+   /*
+   auto IT0 = MemCmp(global_imageComps[0], j->img_comp[0].coeff, j->img_comp[0].x * j->img_comp[0].y * 2);
+   auto IT1 = MemCmp(global_imageComps[1], j->img_comp[1].coeff, j->img_comp[1].x * j->img_comp[1].y * 2);
+   auto IT2 = MemCmp(global_imageComps[2], j->img_comp[2].coeff, j->img_comp[2].x * j->img_comp[2].y * 2);
+   ASSERT(IT0 == j->img_comp[0].x * j->img_comp[0].y * 2);
+   ASSERT(IT1 == j->img_comp[1].x * j->img_comp[1].y * 2);
+   ASSERT(IT2 == j->img_comp[2].x * j->img_comp[2].y * 2);
+
+   IT0 = MemCmp(global_imageComps2[0], j->img_comp[0].coeff, j->img_comp[0].x * j->img_comp[0].y * 2);
+   IT1 = MemCmp(global_imageComps2[1], j->img_comp[1].coeff, j->img_comp[1].x * j->img_comp[1].y * 2);
+   IT2 = MemCmp(global_imageComps2[2], j->img_comp[2].coeff, j->img_comp[2].x * j->img_comp[2].y * 2);
+   ASSERT(IT0 == j->img_comp[0].x * j->img_comp[0].y * 2);
+   ASSERT(IT1 == j->img_comp[1].x * j->img_comp[1].y * 2);
+   ASSERT(IT2 == j->img_comp[2].x * j->img_comp[2].y * 2);
+   */
+
    if (j->progressive)
       stbi__jpeg_finish(j);
    return 1;
@@ -3822,7 +3847,7 @@ static stbi_uc stbi__blinn_8x8(stbi_uc x, stbi_uc y)
 
 static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp, int req_comp)
 {
-   Timer <micro_second_t> t0;
+
    int n, decode_n, is_rgb;
    z->s->img_n = 0; // make stbi__cleanup_jpeg safe
 
@@ -3831,10 +3856,8 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
 
    // load a jpeg image from whichever source, but leave in YCbCr format
    {
-   Timer <micro_second_t> t;
    if (!stbi__decode_jpeg_image(z)) { stbi__cleanup_jpeg(z); return NULL; }
    }
-   Timer <micro_second_t> t;
 
    // determine actual number of components to generate
    n = req_comp ? req_comp : z->s->img_n >= 3 ? 3 : 1;
