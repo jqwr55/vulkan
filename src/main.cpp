@@ -173,12 +173,12 @@ void ScreenCapture(EngineState* state, VkRenderContext* ctx, u32* screenShot, u3
     }
     */
 }
-void Update(xcb_connection_t* connection, xcb_context* ctx, EngineState *state, u64 deltaTime) {
+void Update(xcb_connection_t* connection, xkb_keyboard* keyboard, xcb_context* ctx, EngineState *state, u64 deltaTime) {
 
     state->time += 0.01;
     state->delta++;
 
-    consume_xcb_events(connection, 1, ctx);
+    consume_xcb_events(connection, keyboard, 1, ctx);
 
     ComputeCameraVelocity(&state->camera, ctx->keys, 0.0001 * deltaTime);
     state->camera.position = state->camera.position + state->camera.vel;
@@ -187,12 +187,12 @@ void Update(xcb_connection_t* connection, xcb_context* ctx, EngineState *state, 
     bool ctrl = true;
     if(!ctrl) {
 
-        f64 cursorX = ctx->cursorsX;
-        f64 cursorY = ctx->cursorsY;
+        f64 cursorX = ctx->cursors_x;
+        f64 cursorY = ctx->cursors_y;
         f32 verticalAngle = ((ctx->height * 0.5) - cursorY) / (f32)(ctx->height * 0.5f );
         f32 horizontalAngle = ((ctx->width * 0.5) - cursorX) / (f32)(ctx->width * 0.5f );
-        ctx->cursorsX = (f64)ctx->width * 0.5;
-        ctx->cursorsY = (f64)ctx->height * 0.5;
+        ctx->cursors_x = (f64)ctx->width * 0.5;
+        ctx->cursors_y = (f64)ctx->height * 0.5;
         RotateCamera(&state->camera, verticalAngle, -horizontalAngle);
 
         // xcb_warp_pointer(connection, 0, ctx->window, 0,0,0,0, ctx->cursorsX, ctx->cursorsY);
@@ -263,7 +263,7 @@ byte* InitState(byte* mem, u32 memSize, xcb_context xcb, EngineState* state, Thr
 
 i32 main(i32 argc, const char** argv) {
 
-    auto mem = init_global_state(0, Megabyte(256), 512);
+    auto mem = init_global_state(Megabyte(1), Megabyte(256), 512);
     auto alloc = make_linear_allocator((byte*)mem, Megabyte(256));
     auto scratch = make_linear_allocator( (byte*)mem + Megabyte(252) , Megabyte(4));
     
@@ -280,11 +280,18 @@ i32 main(i32 argc, const char** argv) {
     auto generalImg = MakeJPEGImage(scratch.base, generalSize, &alloc);
 
     xcb_connection_t* c = xcb_connect(0, 0);
+    if (!c || xcb_connection_has_error(c)) {
+        fprintf(stderr, "Couldn't connect to X server: error code %d\n",
+                c ? xcb_connection_has_error(c) : -1);
+    }
+
     xcb_context xcb_ctx[2];
     auto id0 = xcb_generate_id(c);
     //auto id1 = xcb_generate_id(c);
     xcb_ctx[0] = make_xcb_context(c, id0, 640, 480, "vk_render_window");
     //xcb_ctx[1] = make_xcb_context(c, id1, 640, 480, "misc_window");
+
+    auto xkb = make_xcb_keys(c);
 
     VkCoreContext core;
     VkGPUContext gpu;
@@ -415,7 +422,7 @@ i32 main(i32 argc, const char** argv) {
         screenShot++;
         std::this_thread::sleep_for(milli_second_t(20));
         auto end = std::chrono::high_resolution_clock::now();
-        Update(c, xcb_ctx, &state, std::chrono::duration_cast<milli_second_t>(end - begin).count());
+        Update(c, &xkb, xcb_ctx, &state, std::chrono::duration_cast<milli_second_t>(end - begin).count());
         begin = std::chrono::high_resolution_clock::now();
 
         bool mKey = 0 && screenShot > 10;
@@ -432,6 +439,8 @@ i32 main(i32 argc, const char** argv) {
                 RecreateSwapChain(&core, &gpu, &fbo, program.renderPass, xcb_ctx[0].width, xcb_ctx[0].height);
                 xcb_ctx[0].width = fbo.width;
                 xcb_ctx[0].height = fbo.height;
+                f32 ratio = (f32)fbo.width / (f32)fbo.height;
+                state.projection = ComputePerspectiveMat4(ToRadian(90.0f), ratio, 0.01f, 100.0f);
                 continue;
             }
 
@@ -486,6 +495,26 @@ i32 main(i32 argc, const char** argv) {
             cmds[inFlightCmds++] = cmd;
         }
 
+
+        for(u32 i = 0; i < xcb_ctx[0].keySymbolBuffer.size; i++) {
+            auto sym = xcb_ctx[0].keySymbolBuffer[i];
+            if(sym == XKB_KEY_BackSpace) {
+                xcb_ctx[0].keySymbolBuffer.PopBack();
+                xcb_ctx[0].keySymbolBuffer.PopBack();
+                continue;
+            }
+            else if(sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+                xcb_ctx[0].keySymbolBuffer.size -= (i+1);
+                memcpy(xcb_ctx[0].keySymbolBuffer.mem, xcb_ctx[0].keySymbolBuffer.mem + i + 1, xcb_ctx[0].keySymbolBuffer.size);
+                continue;
+            }
+
+            global_io.top += xkb_keysym_to_utf8(sym, (char*)linear_allocator_top(&global_io), linear_allocator_free_size(&global_io));
+            if(global_io.top >= global_io.cap) {
+                global_io_flush();
+            }
+        }
+        global_print("c", '\n');
         global_io_flush();
     }
 

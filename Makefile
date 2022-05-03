@@ -1,6 +1,6 @@
 COMPILER = g++
 CFLAGS = -fno-exceptions -std=c++17 -g
-LDFLAGS = -lvulkan -ldl -pthread -lX11 `pkg-config --cflags --libs xcb`
+LDFLAGS = -lvulkan -ldl -pthread -lX11 `pkg-config --cflags --libs xcb xkbcommon xkbcommon-x11`
 
 INCLUDE_FLAGS = -I ./src -I ./libs/include/
 SRC_PATH = ./src

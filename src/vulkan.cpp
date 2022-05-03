@@ -2267,17 +2267,7 @@ u32 IssueSwapChainAcquire(VkCoreContext* core, VkGPUContext* gpu, VkFbo* fbo, Vk
     img_acquire:
     VkResult imgAcquireResult = vkAcquireNextImageKHR(gpu->logicalDevice, fbo->swapChain, ~u64(0), signalSemaphore, signalFence, &imgIndex);
     if(imgAcquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        
         return ~u32(0);
-        /*
-        i32 w,h;
-        ctx->width = w;
-        ctx->height = h;
-        f32 ratio = (f32)w / (f32)h;
-        state->projection = ComputePerspectiveMat4(ToRadian(90.0f), ratio, 0.01f, 100.0f);
-        RecreateSwapChain(ctx, w, h);
-        goto img_acquire;
-        */
     }
     core->vkScratch.top = top;
 

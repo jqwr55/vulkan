@@ -408,7 +408,7 @@ void runtime_panic(const char* file, u32 line);
 typedef void(*malloc_handler_t)();
 extern byte *global_malloc_base;
 extern malloc_handler_t global_out_of_memory_handler;
-extern LinearAllocator io;
+extern LinearAllocator global_io;
 // ------------- shared mutable global state END ----------------------
 
 struct MemoryBlockHeader {
@@ -952,6 +952,11 @@ struct DynamicBufferGlobal {
     }
     u32 PopBack() {
         return --size;
+    }
+    u32 PopBackSafe() {
+        auto s = --size;
+        size = s & ((s > cap) - 1);
+        return size;
     }
     u32 Shrink() {
         T* tmp = (T*)LOG(ALLOCATE(sizeof(T) * (size + 1) * 2 ));

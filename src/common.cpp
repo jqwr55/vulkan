@@ -6,7 +6,7 @@
 
 byte* global_malloc_base;
 malloc_handler_t global_out_of_memory_handler;
-LinearAllocator io;
+LinearAllocator global_io;
 
 u64 Kilobyte(u64 n) {
     return n * KILO_BYTE;
@@ -1199,7 +1199,7 @@ void init_global_print(LinearAllocator memory) {
     ASSERT(memory.base);
     ASSERT(memory.cap > 64);
     ASSERT(memory.top == 0);
-    io = memory;
+    global_io = memory;
 }
 void print_out_of_memory() {
     global_print("s", "out of memory\n");
@@ -1222,29 +1222,30 @@ byte* init_global_state(u32 heapSize, u32 miscMemoySize, u32 ioBufferSize) {
 }
 // mutates shared global state
 void global_io_flush() {
-    write(STDOUT_FILENO, io.base, io.top);
-    roll_back_linear_allocator(&io, io.base);
+    write(STDOUT_FILENO, global_io.base, global_io.top);
+    roll_back_linear_allocator(&global_io, global_io.base);
 }
 // mutates shared global state
+
 void global_print(const char* format ...) {
 
     va_list args;
     va_start(args, format);
-    auto end = print_fn_v(io.base+io.top, linear_allocator_free_size(&io), format, args);
+    auto end = print_fn_v(global_io.base+global_io.top, linear_allocator_free_size(&global_io), format, args);
     va_end(args);
 
-    auto top = (byte*)linear_allocator_top(&io);
-    if( (end - io.base) >= io.cap) {
+    auto top = (byte*)linear_allocator_top(&global_io);
+    if( (end - global_io.base) >= global_io.cap) {
         global_io_flush();
-        top = (byte*)linear_allocator_top(&io);
+        top = (byte*)linear_allocator_top(&global_io);
 
         va_start(args, format);
-        end = print_fn_v(top, linear_allocator_free_size(&io), format, args);
+        end = print_fn_v(top, linear_allocator_free_size(&global_io), format, args);
         va_end(args);
 
         ASSERT(end != top);
     }
-    linear_allocate(&io, end-top);
+    linear_allocate(&global_io, end-top);
 }
 byte* local_print(byte* buffer, u32 buffer_size, const char* format ...) {
     va_list args;

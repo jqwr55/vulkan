@@ -1,26 +1,42 @@
 #pragma once
 #include <common.h>
 #include <xcb/xcb.h>
+#include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-compose.h>
+#include <xkbcommon/xkbcommon-x11.h>
 
 struct xcb_context {
 
-    xcb_screen_t*           screen;
-    xcb_window_t            window;
-    xcb_intern_atom_reply_t window_delete;
+    xcb_screen_t*   screen;
+    xcb_window_t    window;
+    xcb_atom_t      window_delete;
+    xcb_atom_t      wm_state;
+    xcb_atom_t      wm_state_hidden;
 
     u32 width;
     u32 height;
-    u32 cursorsX;
-    u32 cursorsY;
+    u32 cursors_x;
+    u32 cursors_y;
     u32 keys;
+
+    DynamicBufferDebugMalloc<xkb_keysym_t> keySymbolBuffer;
     bool button0; // left
     bool button1; // right
     bool button2; // middle
     bool open;
 };
 
+struct xkb_keyboard {
+    xkb_context* ctx;
+    xkb_keymap* keymap;
+    xkb_state* state;
+    i32 device_id;
+    char key_str[64];
+};
+
 xcb_context make_xcb_context(xcb_connection_t* connection, xcb_window_t id, u32 w, u32 h, const char* title);
-void consume_xcb_events(xcb_connection_t* connection, u32 ctxCount, xcb_context* ctx);
+void consume_xcb_events(xcb_connection_t* connection, xkb_keyboard* keyboard, u32 ctxCount, xcb_context* ctx);
+xkb_keyboard make_xcb_keys(xcb_connection_t* connection);
 
 enum KEY_MASK : u32 {
     KEY_BIT_W           = 0,
@@ -30,23 +46,3 @@ enum KEY_MASK : u32 {
     KEY_BIT_SPACE       = 4,
     KEY_BIT_LEFT_SHIFT  = 5,
 };
-constexpr auto KEY_ESCAPE   = 0x9;
-constexpr auto KEY_F1       = 0x43;
-constexpr auto KEY_F2       = 0x44;
-constexpr auto KEY_F3       = 0x45;
-constexpr auto KEY_F4       = 0x46;
-constexpr auto KEY_W        = 0x19;
-constexpr auto KEY_A        = 0x26;
-constexpr auto KEY_S        = 0x27;
-constexpr auto KEY_D        = 0x28;
-constexpr auto KEY_P        = 0x21;
-constexpr auto KEY_SPACE    = 0x41;
-constexpr auto KEY_KPADD    = 0x56;
-constexpr auto KEY_KPSUB    = 0x52;
-constexpr auto KEY_B        = 0x38;
-constexpr auto KEY_F        = 0x29;
-constexpr auto KEY_L        = 0x2E;
-constexpr auto KEY_N        = 0x39;
-constexpr auto KEY_O        = 0x20;
-constexpr auto KEY_T        = 0x1C;
-constexpr auto KEY_SHIFT    = 50;
