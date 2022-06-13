@@ -1,8 +1,8 @@
-//#include <debug.h>
-//#include <common.h>
-//#include <vulkan/vulkan.h>
-
 /*
+#include <debug.h>
+#include <common.h>
+#include <vulkan/vulkan.h>
+
 void GLFWclearError() {
     const char* description;
     while(glfwGetError(&description) != GLFW_NO_ERROR );
@@ -69,4 +69,5 @@ bool GLFWlogCall(const char* function, const char* file, int line) {
     }
     return true;
 }
+
 */

@@ -1,0 +1,1 @@
+g++ ./file_to_c.cpp ../src/common.cpp -I ../src/ -g -o file_to_c

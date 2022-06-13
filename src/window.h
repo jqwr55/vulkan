@@ -1,5 +1,5 @@
 #pragma once
-#include <common.h>
+#include "common.h"
 #include <xcb/xcb.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-compose.h>
@@ -45,4 +45,5 @@ enum KEY_MASK : u32 {
     KEY_BIT_D           = 3,
     KEY_BIT_SPACE       = 4,
     KEY_BIT_LEFT_SHIFT  = 5,
+    KEY_BIT_LEFT_CTRL   = 6,
 };

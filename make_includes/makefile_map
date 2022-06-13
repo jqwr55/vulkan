@@ -1,0 +1,17 @@
+# $1 map
+# $2 keys
+# $3 values
+define make_map
+	$(foreach i, $(shell seq $(words $2)), 						\
+		$(eval $1_KEY_$(word $(i), $2) := $(word $(i), $3) )  	\
+	)
+endef
+# $1 name of map
+# $2 key
+map_lookup = $(value $(strip $(1)_KEY_$(strip $(2))))
+map_set_value = $(strip $(1)_KEY_$(strip $(2))) = $(3)
+
+# LIST1 = a b c d
+# LIST2 = 1 2 3 213
+# $(eval $(call make_map, map0,$(LIST1),$(LIST2)))
+# $(call map_lookup, map0,d)

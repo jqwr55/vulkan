@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <setjmp.h>
 
 #include <memory.h>
 #include <sys/mman.h>
@@ -59,11 +60,13 @@ constexpr u64 CACHE_LINE_SIZE = 64;
 
     #define _FORCE_INLINE       __attribute__((always_inline))
     #define _NO_INLINE          __attribute__((noinline))
+    #define _PACK_STRUCT        __attribute__ ((packed))
     #define _RESTRICT           __restrict__
     #define _TRAP               __builtin_trap()
     #define _LIKELY(x)          __bultin_expect(x, 1)
     #define _UN_LIKELY(x)       __bultin_expect(x, 0)
 
+    /*
     template <typename T>
     using v2 = T __attribute__((vector_size(sizeof(T) * 2)));
     template <typename T>
@@ -73,6 +76,7 @@ constexpr u64 CACHE_LINE_SIZE = 64;
 
     typedef v2<u64> bit_mask128;
     typedef v4<u64> bit_mask256;
+    */
 #else
     #ifdef _MSC_VER
     #endif
@@ -93,13 +97,13 @@ void runtime_panic(const char* file, u32 line);
 #ifdef DEBUG_BUILD
     #define LOG_ASSERT(x, y)                                                                     \
         if (!(x)) {                                                                              \
-            global_print("c, s, s, s, c, s, c, i, c", '(', #x, ") ", y, ' ', __FILE__, ' ', __LINE__, '\n'); \
+            global_print("c, s, s, s, c, s, c, i, c", '(', #x, ") ", y, ' ', __FILE__, ':', __LINE__, '\n'); \
             global_io_flush();                                                                   \
             _TRAP;                                                                               \
         }
     #define ASSERT(x)                                                                                           \
         if (!(x)) {                                                                                             \
-            global_print("c, s, s, s, c, i, c", '(', #x, ") triggered builtin trap in: ", __FILE__, ' ', __LINE__, '\n'); \
+            global_print("c, s, s, s, c, i, c", '(', #x, ") triggered builtin trap in: ", __FILE__, ':', __LINE__, '\n'); \
             global_io_flush();                                                                                  \
             _TRAP;                                                                                              \
         }
@@ -141,6 +145,10 @@ T SetBitMaskBitTo(T mask, u32 bit, bool to) {
 }
 template <typename T>
 T &Mem(void *mem) {
+    return *((T *)mem);
+}
+template <typename T>
+const T& Mem(const void* mem) {
     return *((T *)mem);
 }
 template <typename T>
@@ -204,12 +212,16 @@ template<typename T>
 struct SelfRelativePointer {
     i32 add;
     T* operator*() {
-        ASSERT(add != 0);
-        return (T*)(&add + add);
+        return (add == 0) ? nullptr : (T*)(&add + add);
     }
     T* operator->() {
-        ASSERT(add != 0);
-        return (T*)(&add + add);
+        return (add == 0) ? nullptr : (T*)(&add + add);
+    }
+    T* operator = (T* address) {
+        address = (address == 0) ? (T*)&add : address;
+        u32 dist =  address - (T*)&add;
+        add = dist;
+        return address;
     }
 };
 template<typename T>
@@ -225,6 +237,16 @@ struct ForwardRelativePointer {
     }
 };
 
+// ------------ coroutine -------------
+struct coroutine {
+    jmp_buf callee_context;
+    jmp_buf caller_context;
+    bool working;
+};
+typedef void (*coroutine_function)(coroutine*, void*);
+void init_coroutine(coroutine* c, coroutine_function f, void* arg, void* sp);
+void yield_coroutine(coroutine* c, int v);
+int resume_coroutine(coroutine* c);
 
 struct LinearAllocator {
     byte* base;
@@ -315,8 +337,8 @@ template<u32 slab_size>
 void* pool_allocate(MemoryPool<slab_size>* pool) {
     static_assert(slab_size >= sizeof(void*));
 
-    if(pool->list.head) {
-        return free_list_allocate(&pool->list);
+    if(pool->head->next) {
+        return free_list_allocate(&pool->head);
     }
     auto ret = pool->base + pool->top;
     pool->top += slab_size;
@@ -393,6 +415,31 @@ void pool_multi_free(MultiAllocPool<slab_size>* pool, void* memory, u32 size) {
     pool->list = (byte*)memory - pool->base;
 }
 
+struct MemBlock {
+    u64 offset;
+    u32 size;
+    u32 index;
+};
+struct GpuMemoryBlock {
+    u32 offset;
+    u32 size;
+    u32 left; // u16 65k
+    u32 right;
+    bool free;
+};
+struct GpuHeap {
+    GpuMemoryBlock* used_blocks;
+    u32             used_block_count;
+    u32             max_block_count;
+};
+
+void enumarate_blocks(GpuHeap* heap);
+GpuHeap make_gpu_heap(void* base, u32 maxAllocCount, u32 size);
+GpuMemoryBlock* search_free_gpu_block(GpuMemoryBlock* blocks, u32 count, u32 size, u32 alignment);
+MemBlock allocate_gpu_block(GpuHeap* heap, u32 size, u32 alignment);
+MemBlock get_block(GpuHeap* heap, u32 i);
+void free_gpu_block(GpuHeap* heap, MemBlock block);
+
 
 template<typename T>
 struct LocalList {
@@ -463,6 +510,8 @@ void local_malloc_shrink(LocalMallocState* state, void* block, u32 size);
 u32 local_malloc_allocation_size(void* block);
 void* local_max_malloc(LocalMallocState* state);
 void print_local_heap_info(LocalMallocState heap);
+void local_free_debug(LocalMallocState* state, void* allocation);
+void* local_malloc_debug(LocalMallocState* state, u32 size);
 
 u32 str_hash(const char *str, u32 c);
 // counts sentinel
@@ -534,7 +583,16 @@ struct Pixel {
 struct ImageDescriptor {
     u32 width;
     u32 height;
-    Pixel* img;
+    u32 format;
+    u8* img;
+};
+struct Error {
+    u8 is_error;
+    u32 error_type;
+};
+union ResultImage {
+    ImageDescriptor result;
+    Error err;
 };
 ImageDescriptor LoadBMP(const char* path, void* memory);
 
@@ -1055,14 +1113,32 @@ template<typename T> struct SmallStaticBuffer2 {
         return *((T*)(base + memory + index * sizeof(T)));
     }
 };
-static int no = 0;
+template<typename T>
+struct StaticBuffer {
+
+    T* mem;
+    u32 size;
+
+    T& operator[](u32 i) {
+        return mem[i];
+    }
+};
+
+
 template<typename unit>
 struct Timer {
+
+    // static int no;
+    // static u64 total_time;
+
     std::chrono::_V2::system_clock::time_point begin;
-    int m;
+    // u64 begin;
+
+    // int m;
     Timer() {
-        m = no++;
+        // m = no++;
         begin = std::chrono::high_resolution_clock::now();
+        //begin = rdtsc();
     }
 
     auto Now() {
@@ -1079,7 +1155,19 @@ struct Timer {
     void PrintNow() {
         auto end = std::chrono::high_resolution_clock::now();
         auto delta = std::chrono::duration_cast<unit>(end - begin).count();
-        global_print("usuc", m, " elapsed: ", delta, '\n');
+
+        // u64 end = rdtsc();
+        // u64 delta = end - begin;
+
+        // global_print("usuc", m, " elapsed: ", delta, '\n');
+
+        // total_time += delta;
+        global_print("uc", delta, '\n');
+    }
+    static void PrintTotalAVG() {
+        // global_print("sfc", "avg ", (f64)total_time / (f64)no, '\n');
+        // total_time = 0;
+        // no = 0;
     }
 
     ~Timer() {
@@ -1113,18 +1201,18 @@ _FORCE_INLINE u64 xy_to_morton_ (u64 x, u64 y) {
     return l | (r << 1);
 }
 */
-struct HuffmanEntry {
+struct __attribute__ ((packed)) HuffmanEntry16 {
     u16 symbol;
-    u16 bitLen;
+    u8 bitLen;
 };
-struct HuffmanDictionary {
+struct HuffmanDictionary16 {
 
     u32 maxCodeLen;
     u32 count;
-    HuffmanEntry* entries;
+    HuffmanEntry16* entries;
 };
-HuffmanDictionary AllocateHuffmanDict(LinearAllocator* alloc, u32 maxCodeLen);
-void ComputeHuffmanTableJPEG(HuffmanDictionary* dict, u8* bits, u8* symbols);
+HuffmanDictionary16 AllocateHuffmanDict(LinearAllocator* alloc, u32 maxCodeLen);
+void ComputeHuffmanTableJPEG(HuffmanDictionary16* dict, u8* bits, u8* symbols);
 
 struct PNGChunk {
     u32 length;
@@ -1188,16 +1276,22 @@ struct Printer {
     LinearAllocator* io;
     local_io_flush* flush;
 };
+
+i16 ReverseByteOrder(i16 n);
+i64 ReverseByteOrder(i64 n);
+
 u16 ReverseByteOrder(u16 n);
 u32 ReverseByteOrder(u32 n);
 u64 ReverseByteOrder(u64 n);
-PNGInfo ParsePNGMemory(byte* pngMemory, LinearAllocator* alloc);
+
 void PrintPNGChunks(const byte* pngMemory, Printer printer);
-u32 Inflate(byte* in, LinearAllocator* alloc);
+ImageDescriptor DecodePNGMemory(void* memory, u32 memorySize, LinearAllocator* alloc);
+
+PNGInfo ParsePNGMemory(void* memory, u32 memorySize, LinearAllocator* alloc);
+u32 Inflate(byte* in, u32 size, LinearAllocator* alloc);
 u32 PNGDataSize(PNGInfo* png);
 u32 PNGReconstructFilter(PNGInfo* info, u8* dst, u8* src);
 u32 PNGReconstructFilter_(PNGInfo* info, u8* dst, u8* src, u32 outN);
-ImageDescriptor MakeImagePNG(byte* pngMemory, LinearAllocator* alloc);
 
 enum JPEGEntropyType : u8 {
 	ENTROPY_HUFFMAN,
@@ -1213,42 +1307,42 @@ enum JPEGMode : u8 {
 	JPEG_DIFFERENTIAL_FRAME,
 };
 
-enum MarkerType : u8 {
+enum JPEGMarkerType : u8 {
 
-    SOF0 = 0xC0,
-    SOF1 = 0xC1,
-    SOF2 = 0xC2,
-    SOF3 = 0xC3,
+    JPEG_SOF0 = 0xC0,
+    JPEG_SOF1 = 0xC1,
+    JPEG_SOF2 = 0xC2,
+    JPEG_SOF3 = 0xC3,
 
-    SOF5 = 0xC5,
-    SOF6 = 0xC6,
-    SOF7 = 0xC7,
+    JPEG_SOF5 = 0xC5,
+    JPEG_SOF6 = 0xC6,
+    JPEG_SOF7 = 0xC7,
 
-    SOF8 = 0xC8,
-    SOF9 = 0xC9,
-    SOF10 = 0xCA,
-    SOF11 = 0xCB,
+    JPEG_SOF8 = 0xC8,
+    JPEG_SOF9 = 0xC9,
+    JPEG_SOF10 = 0xCA,
+    JPEG_SOF11 = 0xCB,
 
-    SOF13 = 0xCD,
-    SOF14 = 0xCE,
-    SOF15 = 0xCF,
+    JPEG_SOF13 = 0xCD,
+    JPEG_SOF14 = 0xCE,
+    JPEG_SOF15 = 0xCF,
 
-    DHT = 0xC4,
-    DAC = 0xCC,
-    RST0 = 0xD0,
-    SOI  = 0xD8,
-    EOI  = 0xD9,
-    SOS  = 0xDA,
-    DQT  = 0xDB,
-    DNL  = 0xDC,
-    DRI  = 0xDD,
-    DHP  = 0xDE,
-    EXP  = 0xDF,
-    APP0 = 0xE0,
-    JPG0 = 0xF0,
-    COM  = 0xFE,
-    TEM  = 0x01,
-    RES  = 0x02,
+    JPEG_DHT = 0xC4,
+    JPEG_DAC = 0xCC,
+    JPEG_RST0 = 0xD0,
+    JPEG_SOI  = 0xD8,
+    JPEG_EOI  = 0xD9,
+    JPEG_SOS  = 0xDA,
+    JPEG_DQT  = 0xDB,
+    JPEG_DNL  = 0xDC,
+    JPEG_DRI  = 0xDD,
+    JPEG_DHP  = 0xDE,
+    JPEG_EXP  = 0xDF,
+    JPEG_APP0 = 0xE0,
+    JPEG_JPG0 = 0xF0,
+    JPEG_COM  = 0xFE,
+    JPEG_TEM  = 0x01,
+    JPEG_RES  = 0x02,
 };
 
 struct __attribute__ ((packed)) APP0Payload {
@@ -1485,10 +1579,12 @@ struct JPEGFrameInfo {
     JPEGScanInfo* scans;
     JPEGComponentInfo comps[4];
     u32 scanCount;
+    
     u32 interleavedMcuX;
     u32 interleavedMcuY;
     u32 height;
 	u32 width;
+
     u8 samplePrecision;
     u8 mode;
     bool hiearachical;
@@ -1511,22 +1607,39 @@ struct JPEGInfo {
 
 struct BitStream {
     byte* bytePtr;
-    u32 bitPtr;
-    u32 bitCnt;
     u32 bitBuff;
+    u32 bitCnt;
+    u32 bitPtr;
 };
-JPEGInfo ParseJPEGMemory(byte* mem, u32 size, LinearAllocator* alloc);
+struct __attribute__ ((packed)) HuffmanEntry8 {
+    u8 symbol;
+    u8 bitLen;
+};
+struct MultiLevelHuffmanDictionary16 {
+
+    HuffmanEntry8* level0_entries;
+    u32 maxCodeLen;
+    u32 primaryBits;
+    u16 level1_offsets[32];
+    u32 count;
+};
+struct Dim {
+
+    u32 width;
+    u32 height;
+};
+
+
+ImageDescriptor DecodeJPEGMemory(void* memory, u32 size, LinearAllocator* alloc);
 void PrintJPEGMemory(byte* mem, u32 size);
-i32 DecodeJPEGBlockHuffmanSeq(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, HuffmanDictionary* huffAC, u16 dequant[64], i32 pred);
-u32 MemCmp(void* p0, void* p1 , u32 size);
-void PrintHuffmanTableJPEG(u8* bits, u8* symbols);
+Dim GetImageDimmensions(byte* mem, u32 memSize);
+u32 MaxMemoryRequiredJPEG(byte* mem, u32 size);
 
-void FIDCT8(i16 dst[8], i16 src[8]);
-void SlowComputeJPEGIDCT2D(u8* dst, i16 src[64], u32 stride);
-void JPEGInverseDCT8x8(u8* dst, i16 src[64], u32 stride);
-ImageDescriptor MakeJPEGImage(byte* mem, u32 size, LinearAllocator* alloc);
-u32 MaxMemoryRequiredJPEG(byte* mem);
-i32 DecodeJPEGBlockHuffmanProgDC(i16 dst[64], BitStream* src, HuffmanDictionary* huffDC, u32 al, u32 ah, i32 pred);
-i32 DecodeJPEGBlockHuffmanProgAC(i16 dst[64], BitStream* src, HuffmanDictionary* huffAC, u32 spectralStart, u32 spectralEnd, u32 al, u32 ah, i32 eobRun);
-
+i32 DecodeJPEGBlockHuffmanSeq(i16 dst[64], BitStream* src, void* huffDC, void* huffAC, u16 dequant[64], i32 pred);
+i32 DecodeJPEGBlockHuffmanProgDC(i16 dst[64], BitStream* src, void* huffDC, u32 al, u32 ah, i32 pred);
+i32 DecodeJPEGBlockHuffmanProgAC(i16 dst[64], BitStream* src, void* huffAC, u32 spectralStart, u32 spectralEnd, u32 al, u32 ah, i32 eobRun);
+void JPEGResample(JPEGFrameInfo* info, u8* dst, u8* Y, u8* Cb, u8* Cr);
+void JPEGProgressiveFinal(JPEGFrameInfo* info, u8** compFinal, i16** imageComps, u8** reference);
 void stbi__idct_block(u8* out, int out_stride, short data[64]);
+u32 MultiHuffmanDecodeJPEG(MultiLevelHuffmanDictionary16* dict, BitStream* stream);
+void ReSampleImage(ImageDescriptor* dst, ImageDescriptor* src);

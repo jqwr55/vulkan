@@ -107,7 +107,7 @@ void handle_xcb_error(u32 ctxCount, xcb_context* ctx, xcb_generic_error_t* error
         }
     case XCB_WINDOW:
         {
-            auto e = (xcb_request_error_t*)error;
+            auto e = (xcb_window_error_t*)error;
             e->error_code;
 
             break;
@@ -210,22 +210,36 @@ void handle_xcb_event(xcb_connection_t* connection, xkb_keyboard* keyboard, u32 
 	case XCB_KEY_PRESS:
         {
             auto keyEvent = (xcb_key_release_event_t*)event;
+            auto win = ctx + (keyEvent->event - beginID);
             
             xkb_keycode_t keycode = keyEvent->detail;
             xkb_state_update_key(keyboard->state, keycode, XKB_KEY_DOWN);
+            win->keys |= (keycode == 25) << KEY_BIT_W;
+            win->keys |= (keycode == 38) << KEY_BIT_A;
+            win->keys |= (keycode == 39) << KEY_BIT_S;
+            win->keys |= (keycode == 40) << KEY_BIT_D;
+            win->keys |= (keycode == 50) << KEY_BIT_LEFT_SHIFT;
+            win->keys |= (keycode == 65) << KEY_BIT_SPACE;
+            win->keys |= (keycode == 37) << KEY_BIT_LEFT_CTRL;
 
             auto keysym = xkb_state_key_get_one_sym(keyboard->state, keycode);
-            auto size = xkb_state_key_get_utf8(keyboard->state, keycode, keyboard->key_str, 64) + 1;
-            global_print("sc", keyboard->key_str, '\n');
-           
-            ctx[keyEvent->event - beginID].keySymbolBuffer.PushBack(keysym);
+            //ctx[keyEvent->event - beginID].keySymbolBuffer.PushBack(keysym);
 
 	        break;
         }
 	case XCB_KEY_RELEASE:
         {
             auto keyEvent = (xcb_key_release_event_t*)event;
+            auto win = ctx + (keyEvent->event - beginID);
             xkb_keycode_t keycode = keyEvent->detail;
+
+            win->keys &= ~((keycode == 25) << KEY_BIT_W);
+            win->keys &= ~((keycode == 38) << KEY_BIT_A);
+            win->keys &= ~((keycode == 39) << KEY_BIT_S);
+            win->keys &= ~((keycode == 40) << KEY_BIT_D);
+            win->keys &= ~((keycode == 50) << KEY_BIT_LEFT_SHIFT);
+            win->keys &= ~((keycode == 65) << KEY_BIT_SPACE);
+            win->keys &= ~((keycode == 37) << KEY_BIT_LEFT_CTRL);
             xkb_state_update_key(keyboard->state, keycode, XKB_KEY_UP);
             break;
         }

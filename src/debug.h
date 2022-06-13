@@ -1,13 +1,13 @@
 #pragma once
 #include <type_traits>
-#include <common.h>
+#include "common.h"
 
 template<typename Callee, typename ... Args> void VK_CHECK_IF_NOT_VOID(int line, const char* file, Callee fn, Args ... args) {
 
     if constexpr (!std::is_same<void, decltype(fn(args...)) >::value) {
         auto res = fn(args...);
-        if (res != VK_SUCCESS) {
-            global_print("sissc", "VK_CALL failed at ", line, " in file ", file , '\n');
+        if (res != 0) {
+            global_print("sssissc", "VK_CALL failed(", GetVkResultEnumStr(res), ") at ", line, " in file ", file , '\n');
             global_io_flush();
             _TRAP;
         }
@@ -36,6 +36,3 @@ constexpr bool ENABLE_VALIDATION_LAYER = true;
         scratchMemory.top = save;                   \
     }
 #endif
-
-// void GLFWclearError();
-// bool GLFWlogCall(const char* function, const char* file, int line);
